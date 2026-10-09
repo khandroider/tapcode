@@ -1,7 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod editor;
+mod keymap;
+mod settings;
 mod theme;
+mod workspace;
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
@@ -11,5 +15,7 @@ fn main() -> eframe::Result {
             .with_min_inner_size([800.0, 500.0]),
         ..Default::default()
     };
-    eframe::run_native("code-editor", options, Box::new(|cc| Ok(Box::new(app::App::new(cc)))))
+    // `code-editor [folder] [file...]` — like `idea .`
+    let args: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();
+    eframe::run_native("code-editor", options, Box::new(move |cc| Ok(Box::new(app::App::new(cc, &args)))))
 }

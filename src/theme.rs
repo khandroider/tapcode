@@ -14,6 +14,7 @@ pub struct Theme {
 }
 
 #[derive(Deserialize, Clone)]
+#[allow(dead_code)]
 pub struct UiColors {
     pub bg: String,
     pub panel: String,
@@ -42,11 +43,7 @@ pub fn names() -> impl Iterator<Item = &'static str> {
 }
 
 pub fn load(name: &str) -> Theme {
-    let src = BUILTIN
-        .iter()
-        .find(|(n, _)| *n == name)
-        .map(|(_, s)| *s)
-        .unwrap_or(BUILTIN[0].1);
+    let src = BUILTIN.iter().find(|(n, _)| *n == name).map(|(_, s)| *s).unwrap_or(BUILTIN[0].1);
     toml::from_str(src).expect("builtin theme is valid")
 }
 
