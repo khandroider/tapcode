@@ -2,7 +2,9 @@
 
 mod app;
 mod editor;
+mod index;
 mod keymap;
+mod search_ui;
 mod settings;
 mod theme;
 mod workspace;

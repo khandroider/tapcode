@@ -15,10 +15,14 @@ pub struct EditorView<'a> {
     pub font: FontId,
 }
 
+pub fn editor_id(path: &std::path::Path) -> Id {
+    Id::new("editor").with(path)
+}
+
 impl EditorView<'_> {
     pub fn show(self, ui: &mut egui::Ui) {
         let EditorView { buf, theme, font } = self;
-        let id = Id::new("editor").with(&buf.path);
+        let id = editor_id(&buf.path);
         let ctx = ui.ctx().clone();
 
         if buf.find.open {

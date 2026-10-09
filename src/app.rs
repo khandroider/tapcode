@@ -1,6 +1,8 @@
 use crate::editor::buffer::Buffer;
-use crate::editor::view::EditorView;
+use crate::editor::view::{EditorView, editor_id};
+use crate::index::Index;
 use crate::keymap::{self, Action, DoubleShift};
+use crate::search_ui::{Mode, Pick, SearchUi};
 use crate::settings::Settings;
 use crate::theme::{self, Theme};
 use crate::workspace::tree::Tree;
@@ -13,6 +15,8 @@ pub struct App {
     pub theme: Theme,
     pub settings: Settings,
     tree: Option<Tree>,
+    index: Option<Index>,
+    search: SearchUi,
     tabs: Vec<Buffer>,
     active: usize,
     show_project: bool,
@@ -31,6 +35,8 @@ impl App {
             theme,
             settings,
             tree: None,
+            index: None,
+            search: SearchUi::default(),
             tabs: Vec::new(),
             active: 0,
             show_project: true,
@@ -50,6 +56,20 @@ impl App {
         for f in files {
             app.open_file(f);
         }
+        // CODE_EDITOR_DEMO="classes:Controller" opens the search popup at startup (screenshots / smoke checks).
+        if let Ok(demo) = std::env::var("CODE_EDITOR_DEMO")
+            && let Some((mode, q)) = demo.split_once(':')
+        {
+            let mode = match mode {
+                "files" => Mode::Files,
+                "classes" => Mode::Classes,
+                "symbols" => Mode::Symbols,
+                "text" => Mode::Text,
+                "actions" => Mode::Actions,
+                _ => Mode::Everywhere,
+            };
+            app.search.open(mode, false, Some(q.to_owned()));
+        }
         app
     }
 
@@ -59,7 +79,57 @@ impl App {
         self.active = 0;
         Settings::touch_recent(&mut self.settings.recent_projects, &path, 10);
         self.settings.save();
-        self.tree = Some(Tree::new(path));
+        self.tree = Some(Tree::new(path.clone()));
+        self.index = Some(Index::new(path));
+    }
+
+    fn open_file_at(&mut self, path: &Path, line: usize, col: usize, ctx: &egui::Context) {
+        self.open_file(path);
+        if let Some(b) = self.tabs.get_mut(self.active).filter(|b| b.path == path) {
+            let line = line.min(b.rope.len_lines().saturating_sub(1));
+            let ch = b.rope.line_to_char(line) + col.min(b.line_len(line));
+            b.set_cursor(ch, false);
+            ctx.memory_mut(|m| m.request_focus(editor_id(path)));
+        }
+    }
+
+    /// Re-read buffers whose files changed on disk and are not dirty.
+    fn reload_changed(&mut self, paths: &[PathBuf]) {
+        for b in &mut self.tabs {
+            if !b.dirty
+                && paths.contains(&b.path)
+                && let Ok(fresh) = Buffer::open(&b.path)
+            {
+                let cursor = b.cursor.min(fresh.rope.len_chars());
+                *b = fresh;
+                b.cursor = cursor;
+            }
+        }
+    }
+
+    fn replace_in_files(&mut self, query: &str, replacement: &str, paths: &[PathBuf]) {
+        self.save_all();
+        let needle = query.to_lowercase();
+        let mut n = 0;
+        for p in paths {
+            let Ok(text) = std::fs::read_to_string(p) else { continue };
+            let lower = text.to_lowercase();
+            if !lower.contains(&needle) {
+                continue;
+            }
+            let mut out = String::with_capacity(text.len());
+            let mut from = 0;
+            while let Some(off) = lower[from..].find(&needle) {
+                out.push_str(&text[from..from + off]);
+                out.push_str(replacement);
+                from += off + needle.len();
+                n += 1;
+            }
+            out.push_str(&text[from..]);
+            let _ = std::fs::write(p, out);
+        }
+        self.reload_changed(paths);
+        self.status = format!("Replaced {n} occurrences in {} files", paths.len());
     }
 
     fn open_file(&mut self, path: &Path) {
@@ -143,9 +213,23 @@ impl App {
             Action::PrevTab if !self.tabs.is_empty() => self.active = (self.active + self.tabs.len() - 1) % self.tabs.len(),
             Action::ToggleProject => self.show_project = !self.show_project,
             Action::RecentFiles => self.recent_popup = !self.recent_popup,
+            Action::SearchEverywhere => self.search.open(Mode::Everywhere, false, self.selected_word()),
+            Action::GotoFile => self.search.open(Mode::Files, false, self.selected_word()),
+            Action::GotoClass => self.search.open(Mode::Classes, false, self.selected_word()),
+            Action::GotoSymbol => self.search.open(Mode::Symbols, false, self.selected_word()),
+            Action::FindAction => self.search.open(Mode::Actions, false, None),
+            Action::FindInPath => self.search.open(Mode::Text, false, self.selected_word()),
+            Action::ReplaceInPath => self.search.open(Mode::Text, true, self.selected_word()),
             other => self.status = format!("{} — coming in a later phase", keymap::label(other)),
         }
         let _ = ctx;
+    }
+
+    fn selected_word(&self) -> Option<String> {
+        self.tabs
+            .get(self.active)
+            .and_then(|b| b.selected_text())
+            .filter(|t| !t.contains('\n') && t.len() < 200)
     }
 
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
@@ -328,6 +412,31 @@ impl eframe::App for App {
             self.handle(a, &ctx);
         }
         self.autosave_tick(&ctx);
+        let mut changed = Vec::new();
+        if let Some(ix) = &mut self.index
+            && ix.poll()
+        {
+            if !ix.ready {
+                ctx.request_repaint_after(Duration::from_millis(100));
+            }
+            changed = std::mem::take(&mut ix.changed);
+        }
+        if !changed.is_empty() {
+            if let Some(t) = &mut self.tree {
+                t.invalidate();
+            }
+            self.reload_changed(&changed);
+        }
+        if self.search.open {
+            let theme = self.theme.clone();
+            if let Some(pick) = self.search.show(&ctx, self.index.as_ref(), &theme) {
+                match pick {
+                    Pick::Open { path, line, col } => self.open_file_at(&path, line, col, &ctx),
+                    Pick::Action(a) => self.handle(a, &ctx),
+                    Pick::ReplaceAll { query, replacement, paths } => self.replace_in_files(&query, &replacement, &paths),
+                }
+            }
+        }
 
         egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
 
@@ -343,6 +452,10 @@ impl eframe::App for App {
                 ui.label(&self.status);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(&self.theme.name);
+                    if let Some(ix) = &self.index {
+                        ui.separator();
+                        ui.label(&ix.status);
+                    }
                 });
             });
         });

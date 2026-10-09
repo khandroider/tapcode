@@ -27,6 +27,9 @@ rfd = "0.17.2"
 ignore = "0.4.33"
 directories = "6.0.0"
 image = { version = "0.25", default-features = false, features = ["png"] }
+notify = "8.2.0"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+streaming-iterator = "0.1.9"
 
 [profile.dev]
 opt-level = 1
