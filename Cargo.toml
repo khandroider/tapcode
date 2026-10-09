@@ -30,6 +30,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 notify = "8.2.0"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 streaming-iterator = "0.1.9"
+portable-pty = "0.9.0"
+alacritty_terminal = "0.26.0"
 
 [profile.dev]
 opt-level = 1

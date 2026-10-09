@@ -7,6 +7,7 @@ mod index;
 mod keymap;
 mod search_ui;
 mod settings;
+mod terminal;
 mod theme;
 mod workspace;
 

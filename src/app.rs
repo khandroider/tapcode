@@ -6,6 +6,7 @@ use crate::index::Index;
 use crate::keymap::{self, Action, DoubleShift};
 use crate::search_ui::{Mode, Pick, SearchUi};
 use crate::settings::Settings;
+use crate::terminal::view::TerminalPanel;
 use crate::theme::{self, Theme};
 use crate::workspace::tree::Tree;
 use egui::{FontData, FontDefinitions, FontFamily, FontId, TextStyle};
@@ -20,6 +21,8 @@ pub struct App {
     index: Option<Index>,
     git: Option<GitPanel>,
     show_git: bool,
+    terminal: Option<TerminalPanel>,
+    show_terminal: bool,
     search: SearchUi,
     tabs: Vec<Buffer>,
     active: usize,
@@ -42,6 +45,8 @@ impl App {
             index: None,
             git: None,
             show_git: false,
+            terminal: None,
+            show_terminal: false,
             search: SearchUi::default(),
             tabs: Vec::new(),
             active: 0,
@@ -66,6 +71,10 @@ impl App {
         if let Ok(demo) = std::env::var("CODE_EDITOR_DEMO")
             && let Some((mode, q)) = demo.split_once(':')
         {
+            if mode == "terminal" {
+                app.show_terminal = true;
+                return app;
+            }
             if mode == "git" {
                 app.show_git = true;
                 if q == "commit"
@@ -96,6 +105,7 @@ impl App {
         self.settings.save();
         self.tree = Some(Tree::new(path.clone()));
         self.git = gitcmd::toplevel(&path).map(GitPanel::new);
+        self.terminal = Some(TerminalPanel::new(path.clone()));
         self.index = Some(Index::new(path));
     }
 
@@ -237,6 +247,7 @@ impl App {
             Action::FindInPath => self.search.open(Mode::Text, false, self.selected_word()),
             Action::ReplaceInPath => self.search.open(Mode::Text, true, self.selected_word()),
             Action::ToggleGit => self.show_git = !self.show_git,
+            Action::ToggleTerminal => self.show_terminal = !self.show_terminal,
             Action::Commit => {
                 if let Some(g) = &mut self.git {
                     self.show_git = true;
@@ -339,6 +350,7 @@ impl App {
             ui.menu_button("View", |ui| {
                 ui.checkbox(&mut self.show_project, "Project panel");
                 ui.checkbox(&mut self.show_git, "Git panel");
+                ui.checkbox(&mut self.show_terminal, "Terminal");
                 ui.separator();
                 ui.label("Theme");
                 for n in theme::names() {
@@ -557,6 +569,14 @@ impl eframe::App for App {
             }
         }
 
+        if self.show_terminal
+            && let Some(t) = &mut self.terminal
+        {
+            let theme = self.theme.clone();
+            egui::Panel::bottom("terminal")
+                .default_size(280.0)
+                .show(ui, |ui| t.show(ui, &theme));
+        }
         if self.show_git
             && let Some(g) = &mut self.git
         {
