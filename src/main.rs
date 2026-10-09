@@ -87,7 +87,9 @@ fn main() -> eframe::Result {
             // JetBrains-style dark title bar: window content extends under the traffic lights.
             .with_fullsize_content_view(true)
             .with_titlebar_shown(false)
-            .with_title_shown(false),
+            .with_title_shown(false)
+            // Sets the Dock icon on macOS (otherwise Finder's cached/default icon is shown).
+            .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon/tapcode-256.png")).expect("icon png")),
         ..Default::default()
     };
     // `tapcode [folder] [file...]` — like `idea .`

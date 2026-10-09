@@ -1107,6 +1107,7 @@ impl App {
                 ui.separator();
                 let mut goto = None;
                 let root = self.index.as_ref().map(|ix| ix.root.clone()).unwrap_or_default();
+                let usage_font = egui::FontId::monospace(self.settings.font_size + 2.0);
                 egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                     if self.usages.is_empty() {
                         ui.label(RichText::new("No usages (place the caret on a symbol and press Alt+F7)").color(muted));
@@ -1114,8 +1115,8 @@ impl App {
                     for u in self.usages.clone() {
                         let rel = u.path.strip_prefix(&root).unwrap_or(&u.path).display().to_string();
                         let r = ui.horizontal(|ui| {
-                            let r = ui.selectable_label(false, RichText::new(&u.text).monospace());
-                            ui.label(RichText::new(format!("{rel}:{}", u.line + 1)).small().color(muted));
+                            let r = ui.selectable_label(false, RichText::new(&u.text).font(usage_font.clone()));
+                            ui.label(RichText::new(format!("{rel}:{}", u.line + 1)).color(muted));
                             r
                         });
                         if r.inner.clicked() {
