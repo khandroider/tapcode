@@ -33,6 +33,8 @@ pub struct EditorOut {
     pub hover_at: Option<usize>,
     /// Go to definition of the symbol at this char index.
     pub goto: Option<usize>,
+    /// Find usages of the symbol at this char index (Alt+F7 / Cmd+click on a declaration).
+    pub usages: Option<usize>,
 }
 
 impl EditorView<'_> {
@@ -131,6 +133,33 @@ impl EditorView<'_> {
                 )
             })
             .collect();
+        // JetBrains-style identifier highlighting: every occurrence of the word under the caret.
+        let caret_word: Option<String> = if buf.selection().is_none() {
+            let (a, b) = (buf.word_left(buf.cursor), buf.word_right(buf.cursor));
+            let ws = buf.word_start();
+            let w: String = buf.rope.slice(ws..buf.cursor).to_string();
+            let tail: String = {
+                let mut i = buf.cursor;
+                let n = buf.rope.len_chars();
+                let mut t = String::new();
+                while i < n {
+                    let c = buf.rope.char(i);
+                    if c.is_alphanumeric() || c == '_' || c == '$' {
+                        t.push(c);
+                        i += 1;
+                    } else {
+                        break;
+                    }
+                }
+                t
+            };
+            let _ = (a, b);
+            let full = format!("{w}{tail}");
+            (full.chars().count() >= 2 && full.chars().any(|c| c.is_alphabetic())).then_some(full)
+        } else {
+            None
+        };
+        let word_bg = theme.c(&theme.ui.accent).gamma_multiply(0.18);
         let mut hovered_char: Option<usize> = None;
         let mut caret_screen: Option<(f32, f32)> = None;
         let pointer_still = ctx.input(|i| i.pointer.time_since_last_movement()) > 0.45;
@@ -255,6 +284,23 @@ impl EditorView<'_> {
                             color,
                         );
                     };
+                    if let Some(w) = &caret_word {
+                        let lower = text.to_lowercase();
+                        let wl = w.to_lowercase();
+                        let mut from = 0;
+                        let chars: Vec<char> = text.chars().collect();
+                        while let Some(off) = lower[from..].find(&wl) {
+                            let start_b = from + off;
+                            let start_c = text[..start_b].chars().count();
+                            let end_c = start_c + w.chars().count();
+                            let before_ok = start_c == 0 || !(chars[start_c - 1].is_alphanumeric() || chars[start_c - 1] == '_');
+                            let after_ok = end_c >= chars.len() || !(chars[end_c].is_alphanumeric() || chars[end_c] == '_');
+                            if before_ok && after_ok {
+                                paint_range(line_start_char + start_c, line_start_char + end_c, word_bg);
+                            }
+                            from = start_b + wl.len().max(1);
+                        }
+                    }
                     for (a, b) in &find_matches {
                         paint_range(*a, *b, match_bg);
                     }
@@ -299,9 +345,9 @@ impl EditorView<'_> {
                         }
                     }
 
-                    // Mouse → caret.
+                    // Mouse → caret. (double/triple fire on release, so they are checked separately)
                     if let Some(p) = pointer.filter(|p| row.contains(*p))
-                        && (primary_pressed || (primary_down && resp.dragged()))
+                        && (primary_pressed || (primary_down && resp.dragged()) || double || triple)
                     {
                         let rel = vec2(p.x - text_pos.x, 0.0);
                         let col = galley.cursor_from_pos(rel).index.0.min(line_len);
@@ -585,6 +631,7 @@ fn handle_key(buf: &mut Buffer, key: Key, m: Modifiers, out: &mut EditorOut) -> 
     match key {
         Key::Space if m.ctrl => out.completion = Some(false),
         Key::B if cmd => out.goto = Some(buf.cursor),
+        Key::F7 if m.alt || cmd => out.usages = Some(buf.cursor),
         Key::ArrowLeft if cmd => buf.move_home(sel),
         Key::ArrowRight if cmd => buf.move_end(sel),
         Key::ArrowLeft => buf.move_horizontal(-1, sel, m.alt),

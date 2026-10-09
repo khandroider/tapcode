@@ -1,4 +1,4 @@
-//! SQLite index: files, FTS5 full text (trigram), symbols. Lives in `<root>/.code-editor/index.db`.
+//! SQLite index: files, FTS5 full text (trigram), symbols. Lives in `<root>/.tapcode/index.db`.
 
 use super::symbols::Symbol;
 use anyhow::Result;
@@ -52,13 +52,23 @@ CREATE INDEX IF NOT EXISTS symbols_name ON symbols(name COLLATE NOCASE);
 
 impl Db {
     pub fn open(root: &Path) -> Result<Self> {
-        let dir = root.join(".code-editor");
+        let dir = root.join(".tapcode");
         std::fs::create_dir_all(&dir)?;
         let conn = Connection::open(dir.join("index.db"))?;
-        // Two connections (UI + indexer) open at startup; wait instead of failing on the schema lock.
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        conn.execute_batch(SCHEMA)?;
-        Ok(Self { conn })
+        // Two connections (UI + indexer) run the schema at startup; `PRAGMA journal_mode` ignores the
+        // busy handler and can report SQLITE_BUSY, so retry a few times.
+        let mut last = None;
+        for _ in 0..20 {
+            match conn.execute_batch(SCHEMA) {
+                Ok(()) => return Ok(Self { conn }),
+                Err(e) => {
+                    last = Some(e);
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+            }
+        }
+        Err(last.unwrap().into())
     }
 
     pub fn file_mtime(&self, path: &str) -> Option<i64> {
@@ -200,7 +210,7 @@ mod tests {
 
     #[test]
     fn roundtrip_search_and_prune() {
-        let dir = std::env::temp_dir().join(format!("code-editor-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("tapcode-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut db = Db::open(&dir).unwrap();

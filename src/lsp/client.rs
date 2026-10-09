@@ -24,6 +24,7 @@ pub enum LspResult {
     Completion(PathBuf, Vec<CompletionItem>),
     Hover(PathBuf, String),
     Definition(Vec<(PathBuf, usize, usize)>),
+    References(Vec<(PathBuf, usize, usize)>),
     Diagnostics(PathBuf, Vec<Diag>),
 }
 
@@ -32,6 +33,7 @@ enum Pending {
     Completion(PathBuf),
     Hover(PathBuf),
     Definition(PathBuf),
+    References,
 }
 
 enum Incoming {
@@ -171,6 +173,7 @@ impl Client {
                         "completion": {"completionItem": {"snippetSupport": false, "documentationFormat": ["plaintext", "markdown"]}},
                         "hover": {"contentFormat": ["plaintext", "markdown"]},
                         "definition": {},
+                        "references": {},
                         "publishDiagnostics": {}
                     },
                     "workspace": {"workspaceFolders": true}
@@ -267,6 +270,16 @@ impl Client {
                                 .unwrap_or_default();
                             out.push(LspResult::Hover(path, text));
                         }
+                        Pending::References => {
+                            let locs: Vec<(PathBuf, usize, usize)> = serde_json::from_value::<Vec<lsp_types::Location>>(result)
+                                .unwrap_or_default()
+                                .into_iter()
+                                .filter_map(|l| {
+                                    uri_to_path(l.uri.as_str()).map(|p| (p, l.range.start.line as usize, l.range.start.character as usize))
+                                })
+                                .collect();
+                            out.push(LspResult::References(locs));
+                        }
                         Pending::Definition(path) => {
                             let locs: Vec<(PathBuf, usize, usize)> = match serde_json::from_value::<GotoDefinitionResponse>(result) {
                                 Ok(GotoDefinitionResponse::Scalar(l)) => vec![l],
@@ -358,6 +371,14 @@ impl Client {
                 Self::td_pos(path, line, col),
                 Pending::Hover(path.to_path_buf()),
             );
+        }
+    }
+
+    pub fn references(&mut self, path: &Path, line: usize, col: usize) {
+        if self.ready {
+            let mut p = Self::td_pos(path, line, col);
+            p["context"] = json!({"includeDeclaration": false});
+            self.request("textDocument/references", p, Pending::References);
         }
     }
 

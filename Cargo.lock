@@ -761,46 +761,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
-name = "code-editor"
-version = "0.1.0"
-dependencies = [
- "alacritty_terminal",
- "anyhow",
- "bollard",
- "directories",
- "eframe",
- "egui",
- "futures-util",
- "ignore",
- "image",
- "lsp-types",
- "notify",
- "portable-pty",
- "postgres",
- "redis",
- "rfd",
- "ropey",
- "rusqlite",
- "serde",
- "serde_json",
- "sqlparser",
- "streaming-iterator",
- "tokio",
- "toml",
- "tree-sitter",
- "tree-sitter-css",
- "tree-sitter-highlight",
- "tree-sitter-html",
- "tree-sitter-javascript",
- "tree-sitter-json",
- "tree-sitter-md",
- "tree-sitter-php",
- "tree-sitter-sequel",
- "tree-sitter-typescript",
- "tree-sitter-yaml",
-]
-
-[[package]]
 name = "codespan-reporting"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4036,6 +3996,46 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "tapcode"
+version = "0.1.0"
+dependencies = [
+ "alacritty_terminal",
+ "anyhow",
+ "bollard",
+ "directories",
+ "eframe",
+ "egui",
+ "futures-util",
+ "ignore",
+ "image",
+ "lsp-types",
+ "notify",
+ "portable-pty",
+ "postgres",
+ "redis",
+ "rfd",
+ "ropey",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sqlparser",
+ "streaming-iterator",
+ "tokio",
+ "toml",
+ "tree-sitter",
+ "tree-sitter-css",
+ "tree-sitter-highlight",
+ "tree-sitter-html",
+ "tree-sitter-javascript",
+ "tree-sitter-json",
+ "tree-sitter-md",
+ "tree-sitter-php",
+ "tree-sitter-sequel",
+ "tree-sitter-typescript",
+ "tree-sitter-yaml",
 ]
 
 [[package]]

@@ -2,7 +2,7 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: code-editor-pg
+    container_name: tapcode-pg
     environment:
       POSTGRES_PASSWORD: devpass
       POSTGRES_DB: demo
@@ -10,6 +10,6 @@ services:
       - "5440:5432"
   redis:
     image: redis:7-alpine
-    container_name: code-editor-redis
+    container_name: tapcode-redis
     ports:
       - "6390:6379"

@@ -1,4 +1,4 @@
-//! Persistent settings in the OS config dir (`~/Library/Application Support/code-editor/settings.toml`).
+//! Persistent settings in the OS config dir (`~/Library/Application Support/tapcode/settings.toml`).
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -38,7 +38,7 @@ impl Default for Settings {
 }
 
 fn path() -> Option<PathBuf> {
-    directories::ProjectDirs::from("", "", "code-editor").map(|d| d.config_dir().join("settings.toml"))
+    directories::ProjectDirs::from("", "", "tapcode").map(|d| d.config_dir().join("settings.toml"))
 }
 
 impl Settings {

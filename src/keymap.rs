@@ -29,6 +29,15 @@ pub enum Action {
     Annotate,
     ToggleDocker,
     Settings,
+    ToggleCommit,
+    Branches,
+    NewBranch,
+    Merge,
+    Rebase,
+    Stash,
+    Unstash,
+    Fetch,
+    FindUsages,
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;
@@ -70,6 +79,17 @@ pub const BINDINGS: &[(Modifiers, Key, Action)] = &[
     (CMD, Key::Num5, Action::ToggleDatabase),
     (CMD, Key::Num8, Action::ToggleDocker),
     (CMD, Key::Comma, Action::Settings),
+    (CMD, Key::Num0, Action::ToggleCommit),
+    (
+        Modifiers {
+            ctrl: true,
+            shift: true,
+            ..Modifiers::NONE
+        },
+        Key::Backtick,
+        Action::Branches,
+    ),
+    (ALT, Key::F7, Action::FindUsages),
     (ALT, Key::F12, Action::ToggleTerminal),
     (CMD, Key::K, Action::Commit),
     (CMD_SHIFT, Key::K, Action::Push),
@@ -140,6 +160,15 @@ pub fn label(a: Action) -> &'static str {
         Action::Annotate => "Annotate with Git Blame",
         Action::ToggleDocker => "Services (Docker)",
         Action::Settings => "Settings…",
+        Action::ToggleCommit => "Commit",
+        Action::Branches => "Branches…",
+        Action::NewBranch => "New Branch…",
+        Action::Merge => "Merge…",
+        Action::Rebase => "Rebase…",
+        Action::Stash => "Stash Changes…",
+        Action::Unstash => "Unstash Changes…",
+        Action::Fetch => "Fetch",
+        Action::FindUsages => "Find Usages",
     }
 }
 

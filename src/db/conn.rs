@@ -121,11 +121,59 @@ impl Session {
     }
 }
 
+/// Try to connect once (Postgres: SELECT version(), Redis: INFO) on a thread; the receiver gets the outcome.
+pub fn test_connection(cfg: ConnConfig, password: String) -> Receiver<Result<String, String>> {
+    let (tx, rx) = channel();
+    std::thread::spawn(move || {
+        let r = match cfg.kind {
+            Kind::Postgres => postgres::Client::connect(&pg_url(&cfg, &password), postgres::NoTls)
+                .and_then(|mut c| c.query_one("SELECT version()", &[]).map(|r| r.get::<_, String>(0)))
+                .map(|v| v.split(" on ").next().unwrap_or("").to_owned())
+                .map_err(|e| e.to_string()),
+            Kind::Redis => redis::Client::open(redis_url(&cfg, &password))
+                .and_then(|c| c.get_connection_with_timeout(std::time::Duration::from_secs(10)))
+                .and_then(|mut con| redis::cmd("INFO").arg("server").query::<String>(&mut con))
+                .map(|info| {
+                    format!(
+                        "Redis {}",
+                        info.lines().find_map(|l| l.strip_prefix("redis_version:")).unwrap_or("")
+                    )
+                })
+                .map_err(|e| e.to_string()),
+        };
+        let _ = tx.send(r);
+    });
+    rx
+}
+
+fn pg_url(cfg: &ConnConfig, password: &str) -> String {
+    format!(
+        "host={} port={} user={} dbname={} password={} application_name=tapcode connect_timeout=10",
+        cfg.host,
+        cfg.port,
+        cfg.user,
+        cfg.database,
+        password.replace('\\', "\\\\").replace('\'', "\\'")
+    )
+}
+
+fn redis_url(cfg: &ConnConfig, password: &str) -> String {
+    let auth = if password.is_empty() {
+        String::new()
+    } else if cfg.user.is_empty() || cfg.user == "default" {
+        format!(":{password}@")
+    } else {
+        format!("{}:{password}@", cfg.user)
+    };
+    let db = cfg.database.parse::<u32>().unwrap_or(0);
+    format!("redis://{auth}{}:{}/{db}", cfg.host, cfg.port)
+}
+
 // ---- Postgres ----------------------------------------------------------------
 
 fn pg_worker(cfg: ConnConfig, password: String, rx: Receiver<Cmd>, tx: Sender<Reply>, ctx: egui::Context) {
     let url = format!(
-        "host={} port={} user={} dbname={} password={} application_name=code-editor connect_timeout=10",
+        "host={} port={} user={} dbname={} password={} application_name=tapcode connect_timeout=10",
         cfg.host,
         cfg.port,
         cfg.user,

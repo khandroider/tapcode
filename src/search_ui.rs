@@ -84,7 +84,7 @@ pub struct SearchUi {
     last_key: String,
 }
 
-const ACTIONS: [Action; 19] = [
+const ACTIONS: [Action; 28] = [
     Action::OpenFolder,
     Action::GotoFile,
     Action::GotoClass,
@@ -104,6 +104,15 @@ const ACTIONS: [Action; 19] = [
     Action::Annotate,
     Action::ToggleDocker,
     Action::Settings,
+    Action::ToggleCommit,
+    Action::Branches,
+    Action::NewBranch,
+    Action::Merge,
+    Action::Rebase,
+    Action::Stash,
+    Action::Unstash,
+    Action::Fetch,
+    Action::FindUsages,
 ];
 
 impl SearchUi {

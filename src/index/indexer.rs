@@ -56,7 +56,7 @@ pub fn start(root: PathBuf) -> Indexer {
 fn walk(root: &Path) -> Vec<PathBuf> {
     ignore::WalkBuilder::new(root)
         .hidden(false)
-        .filter_entry(|e| !matches!(e.file_name().to_str(), Some(".git" | ".code-editor" | "node_modules" | "vendor")))
+        .filter_entry(|e| !matches!(e.file_name().to_str(), Some(".git" | ".tapcode" | "node_modules" | "vendor")))
         .build()
         .flatten()
         .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
@@ -140,7 +140,7 @@ fn run(root: PathBuf, tx: Sender<Progress>, fs_rx: Receiver<notify::Result<notif
                 pending.extend(
                     ev.paths
                         .into_iter()
-                        .filter(|p| !p.components().any(|c| c.as_os_str() == ".code-editor" || c.as_os_str() == ".git")),
+                        .filter(|p| !p.components().any(|c| c.as_os_str() == ".tapcode" || c.as_os_str() == ".git")),
                 );
             }
             Ok(_) => {}

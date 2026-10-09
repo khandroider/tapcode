@@ -232,6 +232,14 @@ pub fn parse_log(s: &str) -> Vec<Commit> {
         .collect()
 }
 
+/// Commits in a revision range, e.g. `@{u}..HEAD` (outgoing) or `HEAD..@{u}` (incoming).
+pub fn log_range(root: &Path, range: &str) -> Result<Vec<Commit>> {
+    Ok(parse_log(&git(
+        root,
+        &["log", "--format=%H%x1f%h%x1f%an%x1f%ar%x1f%s%x1f%P%x1f%D%x1e", range],
+    )?))
+}
+
 pub fn log(root: &Path, limit: usize, all: bool) -> Result<Vec<Commit>> {
     let n = format!("-n{limit}");
     let mut args = vec!["log", "--format=%H%x1f%h%x1f%an%x1f%ar%x1f%s%x1f%P%x1f%D%x1e", &n];

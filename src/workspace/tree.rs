@@ -40,7 +40,7 @@ impl Tree {
         let mut out: Vec<Entry> = ignore::WalkBuilder::new(dir)
             .max_depth(Some(1))
             .hidden(false)
-            .filter_entry(|e| !matches!(e.file_name().to_str(), Some(".git" | ".DS_Store" | ".code-editor")))
+            .filter_entry(|e| !matches!(e.file_name().to_str(), Some(".git" | ".DS_Store" | ".tapcode")))
             .build()
             .flatten()
             .filter(|e| e.depth() == 1)

@@ -3,7 +3,7 @@
 use std::process::{Command, Stdio};
 
 fn service(name: &str) -> String {
-    format!("code-editor:{name}")
+    format!("tapcode:{name}")
 }
 
 pub fn get(name: &str, account: &str) -> Option<String> {
