@@ -24,8 +24,20 @@ pub fn editor_id(path: &std::path::Path) -> Id {
     Id::new("editor").with(path)
 }
 
+/// Requests the editor wants the app to forward to the language server.
+#[derive(Default)]
+pub struct EditorOut {
+    /// Some(auto): completion wanted at the caret; `auto` = triggered by typing.
+    pub completion: Option<bool>,
+    /// Hover info wanted for this char index.
+    pub hover_at: Option<usize>,
+    /// Go to definition of the symbol at this char index.
+    pub goto: Option<usize>,
+}
+
 impl EditorView<'_> {
-    pub fn show(self, ui: &mut egui::Ui) {
+    pub fn show(self, ui: &mut egui::Ui) -> EditorOut {
+        let mut out = EditorOut::default();
         let EditorView {
             buf,
             theme,
@@ -72,11 +84,27 @@ impl EditorView<'_> {
             let events = ctx.input_mut(|i| std::mem::take(&mut i.events));
             let mut unhandled = Vec::new();
             for ev in events {
-                if !handle_event(buf, &ev) {
+                if completion_key(buf, &ev) {
+                    continue;
+                }
+                if !handle_event(buf, &ev, &mut out) {
                     unhandled.push(ev);
                 }
             }
             ctx.input_mut(|i| i.events = unhandled);
+        } else {
+            buf.completion = None;
+        }
+        // Close an auto-popup once the typed prefix no longer matches anything.
+        if let Some(c) = &buf.completion {
+            let prefix = buf.rope.slice(c.anchor.min(buf.cursor)..buf.cursor).to_string().to_lowercase();
+            let any = c
+                .items
+                .iter()
+                .any(|i| i.filter_text.as_deref().unwrap_or(&i.label).to_lowercase().contains(&prefix));
+            if buf.cursor < c.anchor || (!any && c.auto) {
+                buf.completion = None;
+            }
         }
 
         // ---- text area -------------------------------------------------
@@ -91,6 +119,21 @@ impl EditorView<'_> {
         let fg = theme.c(&theme.ui.fg);
         let match_bg = theme.c(&theme.ui.warning).gamma_multiply(0.35);
         let find_matches: Vec<(usize, usize)> = if buf.find.open { buf.find.matches.clone() } else { Vec::new() };
+        let diags: Vec<(usize, usize, u8, String)> = buf
+            .diagnostics
+            .iter()
+            .map(|d| {
+                (
+                    buf.pos_to_char(d.line, d.col),
+                    buf.pos_to_char(d.end_line, d.end_col),
+                    d.severity,
+                    d.message.clone(),
+                )
+            })
+            .collect();
+        let mut hovered_char: Option<usize> = None;
+        let mut caret_screen: Option<(f32, f32)> = None;
+        let pointer_still = ctx.input(|i| i.pointer.time_since_last_movement()) > 0.45;
 
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
         child.spacing_mut().item_spacing = Vec2::ZERO;
@@ -221,6 +264,41 @@ impl EditorView<'_> {
 
                     painter.galley(text_pos, galley.clone(), fg);
 
+                    // Diagnostics: zigzag underline.
+                    for (a, b, sev, _) in diags
+                        .iter()
+                        .filter(|(a, b, _, _)| *a < line_start_char + line_len + 1 && *b > line_start_char)
+                    {
+                        let a = (*a).max(line_start_char) - line_start_char;
+                        let b = (*b).min(line_start_char + line_len) - line_start_char;
+                        let x0 = text_pos.x + galley.pos_from_cursor(CCursor::new(a)).min.x;
+                        let x1 = (text_pos.x + galley.pos_from_cursor(CCursor::new(b)).min.x).max(x0 + char_w);
+                        let color = match sev {
+                            1 => theme.c(&theme.ui.error),
+                            2 => theme.c(&theme.ui.warning),
+                            _ => theme.c(&theme.ui.fg_muted),
+                        };
+                        let base = y + row_h - 1.5;
+                        let mut pts = Vec::new();
+                        let mut x = x0;
+                        let mut up = false;
+                        while x <= x1 {
+                            pts.push(pos2(x, if up { base - 2.0 } else { base }));
+                            x += 3.0;
+                            up = !up;
+                        }
+                        painter.add(egui::Shape::line(pts, Stroke::new(1.0, color)));
+                    }
+
+                    // Pointer position in text → hovered char (for hover docs / Cmd+click).
+                    if let Some(p) = pointer.filter(|p| row.contains(*p)) {
+                        let rel = vec2(p.x - text_pos.x, 0.0);
+                        let col = galley.cursor_from_pos(rel).index.0;
+                        if col < line_len {
+                            hovered_char = Some(line_start_char + col);
+                        }
+                    }
+
                     // Mouse → caret.
                     if let Some(p) = pointer.filter(|p| row.contains(*p))
                         && (primary_pressed || (primary_down && resp.dragged()))
@@ -228,7 +306,10 @@ impl EditorView<'_> {
                         let rel = vec2(p.x - text_pos.x, 0.0);
                         let col = galley.cursor_from_pos(rel).index.0.min(line_len);
                         let ch = line_start_char + col;
-                        if triple {
+                        if primary_pressed && modifiers.command {
+                            out.goto = Some(ch);
+                            buf.set_cursor(ch, false);
+                        } else if triple {
                             buf.select_line(line);
                         } else if double {
                             buf.select_word_at(ch);
@@ -243,7 +324,7 @@ impl EditorView<'_> {
                 }
 
                 // Caret.
-                if focused {
+                {
                     let (cl, cc) = buf.line_col(buf.cursor);
                     let x = galleys
                         .iter()
@@ -252,8 +333,9 @@ impl EditorView<'_> {
                         .unwrap_or(cc as f32 * char_w);
                     let cx = origin.x + LEFT_PAD + x;
                     let cy = origin.y + cl as f32 * row_h;
+                    caret_screen = Some((cx, cy + row_h));
                     let blink_on = ((ui.input(|i| i.time) * 2.0) as u64).is_multiple_of(2) || buf.scroll_to_cursor;
-                    if blink_on {
+                    if blink_on && focused {
                         painter.vline(cx, cy..=cy + row_h, Stroke::new(2.0, theme.c(&theme.ui.caret)));
                     }
                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
@@ -315,14 +397,142 @@ impl EditorView<'_> {
             );
         }
         ui.allocate_rect(full, Sense::hover());
+
+        // ---- hover: diagnostics message or LSP docs ----------------------------
+        if let Some(ch) = hovered_char {
+            let diag_msg: Vec<&str> = diags
+                .iter()
+                .filter(|(a, b, _, _)| *a <= ch && ch < *b)
+                .map(|(_, _, _, m)| m.as_str())
+                .collect();
+            let hover_text = buf
+                .hover
+                .as_ref()
+                .filter(|h| !h.text.is_empty() && same_word(buf, h.at, ch))
+                .map(|h| h.text.clone());
+            if !diag_msg.is_empty() || hover_text.is_some() {
+                egui::Tooltip::always_open(ctx.clone(), ui.layer_id(), id.with("hover"), egui::PopupAnchor::Pointer).show(|ui| {
+                    for m in &diag_msg {
+                        ui.label(egui::RichText::new(*m).color(theme.c(&theme.ui.error)));
+                    }
+                    if let Some(t) = &hover_text {
+                        ui.add(egui::Label::new(egui::RichText::new(t).monospace()).wrap());
+                    }
+                });
+            } else if pointer_still && !buf.hover.as_ref().is_some_and(|h| same_word(buf, h.at, ch)) && buf.completion.is_none() {
+                out.hover_at = Some(ch);
+            }
+        } else if buf.hover.is_some() && pointer_still {
+            buf.hover = None;
+        }
+
+        // ---- completion popup -------------------------------------------------
+        if let (Some(c), Some((cx, cy))) = (&buf.completion, caret_screen) {
+            let prefix = buf.rope.slice(c.anchor.min(buf.cursor)..buf.cursor).to_string().to_lowercase();
+            let visible: Vec<usize> = c
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(_, i)| i.filter_text.as_deref().unwrap_or(&i.label).to_lowercase().contains(&prefix))
+                .map(|(i, _)| i)
+                .take(12)
+                .collect();
+            let selected = c.selected;
+            let mut accept: Option<usize> = None;
+            egui::Area::new(id.with("completion"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(pos2(cx.max(text_rect.min.x), cy))
+                .constrain_to(ctx.content_rect())
+                .show(&ctx, |ui| {
+                    egui::Frame::popup(ui.style()).fill(theme.c(&theme.ui.panel)).show(ui, |ui| {
+                        ui.set_min_width(260.0);
+                        ui.set_max_width(520.0);
+                        for (row_i, idx) in visible.iter().enumerate() {
+                            let item = &c.items[*idx];
+                            let kind = item.kind.map(|k| format!("{k:?}").to_lowercase()).unwrap_or_default();
+                            let r = ui.horizontal(|ui| {
+                                let r = ui.selectable_label(row_i == selected, egui::RichText::new(&item.label).monospace());
+                                if let Some(d) = &item.detail {
+                                    ui.label(egui::RichText::new(d).small().color(theme.c(&theme.ui.fg_muted)));
+                                }
+                                ui.label(egui::RichText::new(kind).small().color(theme.c(&theme.ui.accent)));
+                                r
+                            });
+                            if r.inner.clicked() {
+                                accept = Some(*idx);
+                            }
+                        }
+                        if visible.is_empty() {
+                            ui.label(egui::RichText::new("No suggestions").color(theme.c(&theme.ui.fg_muted)));
+                        }
+                    });
+                });
+            if let Some(i) = accept {
+                let item = c.items[i].clone();
+                buf.accept_completion(&item);
+            }
+        }
+        out
     }
 }
 
+fn same_word(buf: &Buffer, a: usize, b: usize) -> bool {
+    a == b || (buf.word_left(a.max(b)) <= a.min(b) && buf.word_right(a.min(b)) >= a.max(b))
+}
+
+/// Keys that drive the completion popup; true when consumed.
+fn completion_key(buf: &mut Buffer, ev: &Event) -> bool {
+    let Some(c) = &mut buf.completion else { return false };
+    let Event::Key {
+        key,
+        pressed: true,
+        modifiers,
+        ..
+    } = ev
+    else {
+        return false;
+    };
+    if !modifiers.is_none() {
+        return false;
+    }
+    let prefix = buf.rope.slice(c.anchor.min(buf.cursor)..buf.cursor).to_string().to_lowercase();
+    let visible: Vec<usize> = c
+        .items
+        .iter()
+        .enumerate()
+        .filter(|(_, i)| i.filter_text.as_deref().unwrap_or(&i.label).to_lowercase().contains(&prefix))
+        .map(|(i, _)| i)
+        .take(12)
+        .collect();
+    match key {
+        Key::ArrowDown => c.selected = (c.selected + 1) % visible.len().max(1),
+        Key::ArrowUp => c.selected = (c.selected + visible.len().max(1) - 1) % visible.len().max(1),
+        Key::Escape => buf.completion = None,
+        Key::Enter | Key::Tab => {
+            if let Some(idx) = visible.get(c.selected) {
+                let item = c.items[*idx].clone();
+                buf.accept_completion(&item);
+            } else {
+                buf.completion = None;
+                return false;
+            }
+        }
+        _ => return false,
+    }
+    true
+}
+
 /// Returns true when the event was consumed by the editor.
-fn handle_event(buf: &mut Buffer, ev: &Event) -> bool {
+fn handle_event(buf: &mut Buffer, ev: &Event, out: &mut EditorOut) -> bool {
     match ev {
         Event::Text(t) => {
             buf.insert(t);
+            let trigger = t.chars().count() == 1
+                && t.chars()
+                    .all(|c| c.is_alphanumeric() || matches!(c, '_' | '$' | '.' | '>' | ':' | '\\'));
+            if trigger {
+                out.completion = Some(true);
+            }
             true
         }
         Event::Copy => {
@@ -347,7 +557,7 @@ fn handle_event(buf: &mut Buffer, ev: &Event) -> bool {
             pressed: true,
             modifiers,
             ..
-        } => handle_key(buf, *key, *modifiers),
+        } => handle_key(buf, *key, *modifiers, out),
         _ => false,
     }
 }
@@ -369,10 +579,12 @@ fn copy(buf: &mut Buffer) {
     });
 }
 
-fn handle_key(buf: &mut Buffer, key: Key, m: Modifiers) -> bool {
+fn handle_key(buf: &mut Buffer, key: Key, m: Modifiers, out: &mut EditorOut) -> bool {
     let cmd = m.command;
     let sel = m.shift;
     match key {
+        Key::Space if m.ctrl => out.completion = Some(false),
+        Key::B if cmd => out.goto = Some(buf.cursor),
         Key::ArrowLeft if cmd => buf.move_home(sel),
         Key::ArrowRight if cmd => buf.move_end(sel),
         Key::ArrowLeft => buf.move_horizontal(-1, sel, m.alt),

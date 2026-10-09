@@ -2,7 +2,9 @@
 
 use super::highlight::{self, Span};
 use super::languages::Lang;
+use crate::lsp::client::Diag;
 use anyhow::{Context, Result};
+use lsp_types::{CompletionItem, CompletionTextEdit, InsertTextFormat};
 use ropey::Rope;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -30,6 +32,21 @@ pub struct FindState {
     pub focus: bool,
 }
 
+pub struct CompletionState {
+    pub items: Vec<CompletionItem>,
+    pub selected: usize,
+    /// Char index where the word being completed starts.
+    pub anchor: usize,
+    /// Opened automatically while typing (closes silently when nothing matches).
+    pub auto: bool,
+}
+
+#[derive(Clone)]
+pub struct HoverState {
+    pub at: usize,
+    pub text: String,
+}
+
 pub struct Buffer {
     pub path: PathBuf,
     pub lang: Lang,
@@ -51,6 +68,12 @@ pub struct Buffer {
     max_cols_version: u64,
     pub scroll_to_cursor: bool,
     pub find: FindState,
+    // ---- language server state ----
+    pub diagnostics: Vec<Diag>,
+    pub completion: Option<CompletionState>,
+    pub completion_pending: Option<bool>,
+    pub hover: Option<HoverState>,
+    pub lsp_version: u64,
 }
 
 impl Buffer {
@@ -78,7 +101,51 @@ impl Buffer {
             max_cols_version: u64::MAX,
             scroll_to_cursor: true,
             find: FindState::default(),
+            diagnostics: Vec::new(),
+            completion: None,
+            completion_pending: None,
+            hover: None,
+            lsp_version: u64::MAX,
         }
+    }
+
+    pub fn idle(&self) -> Duration {
+        self.last_edit.elapsed()
+    }
+
+    pub fn pos_to_char(&self, line: usize, col: usize) -> usize {
+        let line = line.min(self.rope.len_lines().saturating_sub(1));
+        self.rope.line_to_char(line) + col.min(self.line_len(line))
+    }
+
+    /// Start of the identifier the caret is in / right after.
+    pub fn word_start(&self) -> usize {
+        self.word_left_strict(self.cursor)
+    }
+
+    pub fn accept_completion(&mut self, item: &CompletionItem) {
+        let anchor = self.completion.as_ref().map(|c| c.anchor).unwrap_or(self.cursor);
+        let (start, end, text) = match &item.text_edit {
+            Some(CompletionTextEdit::Edit(e)) => (
+                self.pos_to_char(e.range.start.line as usize, e.range.start.character as usize),
+                self.pos_to_char(e.range.end.line as usize, e.range.end.character as usize),
+                e.new_text.clone(),
+            ),
+            Some(CompletionTextEdit::InsertAndReplace(e)) => (
+                self.pos_to_char(e.insert.start.line as usize, e.insert.start.character as usize),
+                self.pos_to_char(e.insert.end.line as usize, e.insert.end.character as usize),
+                e.new_text.clone(),
+            ),
+            None => (anchor, self.cursor, item.insert_text.clone().unwrap_or_else(|| item.label.clone())),
+        };
+        let text = if item.insert_text_format == Some(InsertTextFormat::SNIPPET) {
+            strip_snippet(&text)
+        } else {
+            text
+        };
+        let (start, end) = (start.min(end).min(self.rope.len_chars()), start.max(end).min(self.rope.len_chars()));
+        self.replace(start, end, &text);
+        self.completion = None;
     }
 
     pub fn name(&self) -> String {
@@ -783,9 +850,71 @@ impl Buffer {
     }
 }
 
+/// `${1:name}` → `name`, `$1`/`$0` → ``; good enough without snippet support.
+pub fn strip_snippet(s: &str) -> String {
+    let mut out = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '$' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek() {
+            Some('{') => {
+                chars.next();
+                let mut inner = String::new();
+                let mut depth = 1;
+                for c in chars.by_ref() {
+                    if c == '{' {
+                        depth += 1;
+                    } else if c == '}' {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    inner.push(c);
+                }
+                if let Some((_, name)) = inner.split_once(':') {
+                    out.push_str(&strip_snippet(name));
+                }
+            }
+            Some(d) if d.is_ascii_digit() => {
+                while chars.peek().is_some_and(|c| c.is_ascii_digit()) {
+                    chars.next();
+                }
+            }
+            _ => out.push('$'),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snippet_and_completion_accept() {
+        assert_eq!(strip_snippet("foo(${1:a}, $2)$0"), "foo(a, )");
+        assert_eq!(strip_snippet("$var"), "$var");
+        let mut b = buf("$this->getNa");
+        b.move_end(false);
+        b.completion = Some(CompletionState {
+            items: Vec::new(),
+            selected: 0,
+            anchor: b.word_start(),
+            auto: false,
+        });
+        assert_eq!(b.word_start(), 7);
+        let item = CompletionItem {
+            label: "getName".into(),
+            insert_text: Some("getName()".into()),
+            ..Default::default()
+        };
+        b.accept_completion(&item);
+        assert_eq!(b.text(), "$this->getName()");
+    }
 
     fn buf(t: &str) -> Buffer {
         Buffer::from_text(Path::new("t.php"), t)

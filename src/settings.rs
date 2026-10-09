@@ -12,6 +12,11 @@ pub struct Settings {
     pub font_size: f32,
     pub recent_projects: Vec<PathBuf>,
     pub recent_files: Vec<PathBuf>,
+    /// Language server commands (argv). Defaults run through npx so nothing needs a global install.
+    pub lsp_php: Vec<String>,
+    pub lsp_ts: Vec<String>,
+    /// Explicit tsserver.js path; empty = project node_modules, then npx cache.
+    pub tsserver_path: String,
 }
 
 impl Default for Settings {
@@ -23,6 +28,9 @@ impl Default for Settings {
             font_size: 13.0,
             recent_projects: Vec::new(),
             recent_files: Vec::new(),
+            lsp_php: ["npx", "-y", "intelephense", "--stdio"].map(String::from).to_vec(),
+            lsp_ts: ["npx", "-y", "typescript-language-server", "--stdio"].map(String::from).to_vec(),
+            tsserver_path: String::new(),
         }
     }
 }

@@ -4,6 +4,8 @@ use crate::git::cmd as gitcmd;
 use crate::git::ui::{GitPanel, GitPick};
 use crate::index::Index;
 use crate::keymap::{self, Action, DoubleShift};
+use crate::lsp::client::{Diag, LspResult};
+use crate::lsp::{self, Lsp};
 use crate::search_ui::{Mode, Pick, SearchUi};
 use crate::settings::Settings;
 use crate::terminal::view::TerminalPanel;
@@ -30,6 +32,11 @@ pub struct App {
     recent_popup: bool,
     status: String,
     double_shift: DoubleShift,
+    lsp: Lsp,
+    /// CODE_EDITOR_DEMO="lsp:<line>:<col>": request completion there once the server is up.
+    demo_completion: Option<(usize, usize)>,
+    /// Diagnostics for files that are not open yet (or were closed).
+    diag_store: std::collections::HashMap<PathBuf, Vec<Diag>>,
 }
 
 impl App {
@@ -54,6 +61,9 @@ impl App {
             recent_popup: false,
             status: String::new(),
             double_shift: DoubleShift::default(),
+            lsp: Lsp::default(),
+            demo_completion: None,
+            diag_store: std::collections::HashMap::new(),
         };
         let (dirs, files): (Vec<_>, Vec<_>) = args.iter().partition(|p| p.is_dir());
         match dirs.first() {
@@ -73,6 +83,11 @@ impl App {
         {
             if mode == "terminal" {
                 app.show_terminal = true;
+                return app;
+            }
+            if mode == "lsp" {
+                let (l, c) = q.split_once(':').unwrap_or((q, "9999"));
+                app.demo_completion = Some((l.parse().unwrap_or(1), c.parse().unwrap_or(usize::MAX)));
                 return app;
             }
             if mode == "git" {
@@ -164,7 +179,10 @@ impl App {
             return;
         }
         match Buffer::open(path) {
-            Ok(b) => {
+            Ok(mut b) => {
+                if let Some(d) = self.diag_store.get(path) {
+                    b.diagnostics = d.clone();
+                }
                 self.tabs.push(b);
                 self.active = self.tabs.len() - 1;
                 Settings::touch_recent(&mut self.settings.recent_files, &path.to_path_buf(), 30);
@@ -179,6 +197,7 @@ impl App {
             return;
         }
         let mut b = self.tabs.remove(i);
+        self.lsp.close_all(&b.path);
         if b.dirty
             && let Err(e) = b.save()
         {
@@ -205,6 +224,106 @@ impl App {
         }
     }
 
+    /// Open/sync buffers with their language servers and apply incoming results.
+    fn lsp_tick(&mut self, ctx: &egui::Context) {
+        let Some(root) = self.index.as_ref().map(|ix| ix.root.clone()) else {
+            return;
+        };
+        for b in &mut self.tabs {
+            let Some((_, lang_id)) = lsp::server_for(b.lang) else { continue };
+            let Some(c) = self.lsp.client_for(b.lang, &root, &self.settings, ctx) else {
+                continue;
+            };
+            if !c.ready {
+                continue;
+            }
+            if !c.is_open(&b.path) {
+                c.did_open(&b.path, lang_id, &b.text());
+                b.lsp_version = b.version;
+            } else if let Some((line, col)) = self.demo_completion.take() {
+                b.set_cursor(b.pos_to_char(line.saturating_sub(1), col), false);
+                let (l, col) = b.line_col(b.cursor);
+                b.completion_pending = Some(false);
+                c.completion(&b.path, l, col);
+                ctx.memory_mut(|m| m.request_focus(editor_id(&b.path)));
+            } else if b.lsp_version != b.version && b.idle() >= Duration::from_millis(80) {
+                c.did_change(&b.path, &b.text());
+                b.lsp_version = b.version;
+            } else if b.lsp_version != b.version {
+                ctx.request_repaint_after(Duration::from_millis(80));
+            }
+        }
+        let mut goto: Option<(PathBuf, usize, usize)> = None;
+        for r in self.lsp.poll() {
+            match r {
+                LspResult::Diagnostics(path, diags) => {
+                    if let Some(b) = self.tabs.iter_mut().find(|b| b.path == path) {
+                        b.diagnostics = diags.clone();
+                    }
+                    self.diag_store.insert(path, diags);
+                }
+                LspResult::Completion(path, items) => {
+                    if let Some(b) = self.tabs.iter_mut().find(|b| b.path == path)
+                        && let Some(auto) = b.completion_pending.take()
+                    {
+                        let anchor = b.word_start();
+                        b.completion = (!items.is_empty() || !auto).then_some(crate::editor::buffer::CompletionState {
+                            items,
+                            selected: 0,
+                            anchor,
+                            auto,
+                        });
+                    }
+                }
+                LspResult::Hover(path, text) => {
+                    if let Some(b) = self.tabs.iter_mut().find(|b| b.path == path)
+                        && let Some(h) = &mut b.hover
+                    {
+                        h.text = text;
+                    }
+                }
+                LspResult::Definition(locs) => goto = locs.into_iter().next(),
+            }
+        }
+        if let Some((p, line, col)) = goto {
+            self.open_file_at(&p, line, col, ctx);
+        }
+    }
+
+    fn lsp_request(&mut self, out: crate::editor::view::EditorOut, ctx: &egui::Context) {
+        let Some(root) = self.index.as_ref().map(|ix| ix.root.clone()) else {
+            return;
+        };
+        let Some(b) = self.tabs.get_mut(self.active) else { return };
+        let Some(c) = self.lsp.client_for(b.lang, &root, &self.settings, ctx) else {
+            return;
+        };
+        if !c.is_open(&b.path) {
+            return;
+        }
+        if b.lsp_version != b.version {
+            c.did_change(&b.path, &b.text());
+            b.lsp_version = b.version;
+        }
+        if let Some(auto) = out.completion {
+            let (l, col) = b.line_col(b.cursor);
+            b.completion_pending = Some(auto);
+            c.completion(&b.path, l, col);
+        }
+        if let Some(ch) = out.hover_at {
+            let (l, col) = b.line_col(ch);
+            b.hover = Some(crate::editor::buffer::HoverState {
+                at: ch,
+                text: String::new(),
+            });
+            c.hover(&b.path, l, col);
+        }
+        if let Some(ch) = out.goto {
+            let (l, col) = b.line_col(ch);
+            c.definition(&b.path, l, col);
+        }
+    }
+
     fn autosave_tick(&mut self, ctx: &egui::Context) {
         if !self.settings.autosave {
             return;
@@ -212,14 +331,18 @@ impl App {
         let delay = Duration::from_millis(self.settings.autosave_delay_ms);
         let lost_focus = ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::WindowFocused(false))));
         let mut any_dirty = false;
+        let mut saved = Vec::new();
         for b in &mut self.tabs {
-            if b.dirty
-                && (lost_focus || b.autosave_due(delay))
-                && let Err(e) = b.save()
-            {
-                self.status = format!("{e:#}");
+            if b.dirty && (lost_focus || b.autosave_due(delay)) {
+                match b.save() {
+                    Ok(()) => saved.push(b.path.clone()),
+                    Err(e) => self.status = format!("{e:#}"),
+                }
             }
             any_dirty |= b.dirty;
+        }
+        for p in saved {
+            self.lsp.did_save_all(&p);
         }
         if any_dirty {
             ctx.request_repaint_after(delay);
@@ -466,7 +589,12 @@ fn screenshot_hook(ctx: &egui::Context) {
             eprintln!("screenshot: {e}");
         }
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-    } else if ctx.input(|i| i.time) > 1.5 {
+    } else if ctx.input(|i| i.time)
+        > std::env::var("CODE_EDITOR_SCREENSHOT_DELAY")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1.5)
+    {
         ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
     } else {
         ctx.request_repaint();
@@ -504,6 +632,7 @@ impl eframe::App for App {
             let theme = self.theme.clone();
             g.dialogs(&ctx, &theme);
         }
+        self.lsp_tick(&ctx);
         if self.search.open {
             let theme = self.theme.clone();
             if let Some(pick) = self.search.show(&ctx, self.index.as_ref(), &theme) {
@@ -525,8 +654,22 @@ impl eframe::App for App {
                     ui.separator();
                     ui.label(b.lang.name());
                     ui.separator();
+                    let errs = b.diagnostics.iter().filter(|d| d.severity == 1).count();
+                    let warns = b.diagnostics.iter().filter(|d| d.severity == 2).count();
+                    if errs + warns > 0 {
+                        ui.label(egui::RichText::new(format!("{errs} errors, {warns} warnings")).color(if errs > 0 {
+                            self.theme.c(&self.theme.ui.error)
+                        } else {
+                            self.theme.c(&self.theme.ui.warning)
+                        }));
+                        ui.separator();
+                    }
                 }
                 ui.label(&self.status);
+                let lsp_status = self.lsp.status();
+                if !lsp_status.is_empty() {
+                    ui.label(egui::RichText::new(lsp_status).color(self.theme.c(&self.theme.ui.fg_muted)));
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(&self.theme.name);
                     if let Some(ix) = &self.index {
@@ -590,6 +733,7 @@ impl eframe::App for App {
             }
         }
 
+        let mut editor_out = crate::editor::view::EditorOut::default();
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(self.theme.c(&self.theme.ui.bg)))
             .show(ui, |ui| {
@@ -611,7 +755,7 @@ impl eframe::App for App {
                         Some(g) => (g.marks_for(&buf.path).to_vec(), g.blame_for(&buf.path).map(|b| b.to_vec())),
                         None => (Vec::new(), None),
                     };
-                    EditorView {
+                    editor_out = EditorView {
                         buf,
                         theme: &self.theme,
                         font,
@@ -621,6 +765,7 @@ impl eframe::App for App {
                     .show(ui);
                 }
             });
+        self.lsp_request(editor_out, &ctx);
 
         self.recent_files_popup(&ctx);
     }

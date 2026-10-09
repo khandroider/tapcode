@@ -55,6 +55,8 @@ impl Db {
         let dir = root.join(".code-editor");
         std::fs::create_dir_all(&dir)?;
         let conn = Connection::open(dir.join("index.db"))?;
+        // Two connections (UI + indexer) open at startup; wait instead of failing on the schema lock.
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(SCHEMA)?;
         Ok(Self { conn })
     }

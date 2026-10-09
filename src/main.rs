@@ -5,6 +5,7 @@ mod editor;
 mod git;
 mod index;
 mod keymap;
+mod lsp;
 mod search_ui;
 mod settings;
 mod terminal;
