@@ -1,0 +1,20 @@
+[package]
+name = "code-editor"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Opensource IDE for PHP / JavaScript / TypeScript"
+repository = "https://github.com/kaiyrkhan/code-editor"
+
+[dependencies]
+eframe = "0.36"
+egui = "0.36"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+anyhow = "1"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
