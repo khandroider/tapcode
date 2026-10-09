@@ -51,6 +51,8 @@ pub struct Client {
     pending: HashMap<i64, Pending>,
     pub ready: bool,
     pub dead: bool,
+    /// Server-side indexing in progress (intelephense sends indexingStarted/indexingEnded).
+    pub indexing: bool,
     open: HashMap<PathBuf, i32>,
     pub log: Vec<String>,
 }
@@ -157,6 +159,7 @@ impl Client {
             pending: HashMap::new(),
             ready: false,
             dead: false,
+            indexing: false,
             open: HashMap::new(),
             log: Vec::new(),
         };

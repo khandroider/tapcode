@@ -39,6 +39,7 @@ enum BottomTool {
 enum Special {
     Diff { title: String, lines: Vec<gitcmd::DiffLine> },
     Console(String),
+    Table(String),
 }
 
 #[derive(Clone)]
@@ -73,6 +74,7 @@ pub struct App {
     lsp: Lsp,
     /// TAPCODE_DEMO="lsp:<line>:<col>": request completion there once the server is up.
     demo_completion: Option<(usize, usize)>,
+    demo_goto: bool,
     diag_store: std::collections::HashMap<PathBuf, Vec<Diag>>,
 }
 
@@ -106,6 +108,7 @@ impl App {
             double_shift: DoubleShift::default(),
             lsp: Lsp::default(),
             demo_completion: None,
+            demo_goto: false,
             diag_store: std::collections::HashMap::new(),
         };
         let (dirs, files): (Vec<_>, Vec<_>) = args.iter().partition(|p| p.is_dir());
@@ -131,14 +134,23 @@ impl App {
                     app.left = Some(LeftTool::Database);
                     let mut it = q.splitn(3, ':');
                     let (name, pw, stmt) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next().unwrap_or(""));
-                    if !name.is_empty() {
-                        app.db.demo_connect(name, pw, stmt, &cc.egui_ctx);
-                        app.special = Some(Special::Console(name.to_owned()));
+                    if !name.is_empty()
+                        && let Some(key) = app.db.demo_connect(name, pw, stmt, &cc.egui_ctx)
+                    {
+                        app.special = Some(if stmt.starts_with("table:") {
+                            Special::Table(key)
+                        } else {
+                            Special::Console(key)
+                        });
                     }
                 }
                 "lsp" => {
-                    let (l, c) = q.split_once(':').unwrap_or((q, "9999"));
-                    app.demo_completion = Some((l.parse().unwrap_or(1), c.parse().unwrap_or(usize::MAX)));
+                    // lsp:<line>:<col>[:def]
+                    let mut it = q.split(':');
+                    let l = it.next().and_then(|v| v.parse().ok()).unwrap_or(1);
+                    let c = it.next().and_then(|v| v.parse().ok()).unwrap_or(usize::MAX);
+                    app.demo_completion = Some((l, c));
+                    app.demo_goto = it.next() == Some("def");
                 }
                 "git" => {
                     app.left = Some(LeftTool::Commit);
@@ -322,8 +334,12 @@ impl App {
             } else if let Some((line, col)) = self.demo_completion.take() {
                 b.set_cursor(b.pos_to_char(line.saturating_sub(1), col), false);
                 let (l, col) = b.line_col(b.cursor);
-                b.completion_pending = Some(false);
-                c.completion(&b.path, l, col);
+                if self.demo_goto {
+                    c.definition(&b.path, l, col);
+                } else {
+                    b.completion_pending = Some(false);
+                    c.completion(&b.path, l, col);
+                }
                 ctx.memory_mut(|m| m.request_focus(editor_id(&b.path)));
             } else if b.lsp_version != b.version && b.idle() >= Duration::from_millis(80) {
                 c.did_change(&b.path, &b.text());
@@ -333,6 +349,7 @@ impl App {
             }
         }
         let mut goto: Option<(PathBuf, usize, usize)> = None;
+        let mut goto_empty = false;
         let mut refs: Option<Vec<(PathBuf, usize, usize)>> = None;
         for r in self.lsp.poll() {
             match r {
@@ -362,9 +379,15 @@ impl App {
                         h.text = text;
                     }
                 }
-                LspResult::Definition(locs) => goto = locs.into_iter().next(),
+                LspResult::Definition(locs) => {
+                    goto_empty = locs.is_empty();
+                    goto = locs.into_iter().next();
+                }
                 LspResult::References(locs) => refs = Some(locs),
             }
+        }
+        if goto_empty {
+            self.status = "Cannot find declaration to go to (the language server may still be indexing)".into();
         }
         if let Some((p, line, col)) = goto {
             // Cmd+click on the declaration itself → show usages instead (JetBrains behaviour).
@@ -438,10 +461,17 @@ impl App {
             return;
         };
         let Some(b) = self.tabs.get_mut(self.active) else { return };
+        let wants = out.completion.is_some() || out.goto.is_some() || out.hover_at.is_some();
         let Some(c) = self.lsp.client_for(b.lang, &root, &self.settings, ctx) else {
+            if out.goto.is_some() {
+                self.status = format!("No language server for {}", b.lang.name());
+            }
             return;
         };
         if !c.is_open(&b.path) {
+            if wants && out.goto.is_some() {
+                self.status = "Language server is still starting…".into();
+            }
             return;
         }
         if b.lsp_version != b.version {
@@ -782,6 +812,7 @@ impl App {
                     let title = match sp {
                         Special::Diff { title, .. } => title.clone(),
                         Special::Console(n) => format!("console [{n}]"),
+                        Special::Table(k) => self.db.table_title(k),
                     };
                     let r = ui.selectable_label(true, RichText::new(title).italics());
                     if r.clicked() {
@@ -986,11 +1017,11 @@ impl App {
                     None => {}
                 }
             }
-            Some(LeftTool::Database) => {
-                if let Some(DbPick::Console(name)) = self.db.show_tree(ui, &theme) {
-                    self.special = Some(Special::Console(name));
-                }
-            }
+            Some(LeftTool::Database) => match self.db.show_tree(ui, &theme) {
+                Some(DbPick::Console(key)) => self.special = Some(Special::Console(key)),
+                Some(DbPick::Table(key)) => self.special = Some(Special::Table(key)),
+                None => {}
+            },
             None => {}
         }
     }
@@ -1141,6 +1172,10 @@ impl App {
             Some(Special::Console(name)) => {
                 let name = name.clone();
                 self.db.show_console(ui, &theme, font, &name);
+            }
+            Some(Special::Table(key)) => {
+                let key = key.clone();
+                self.db.show_table(ui, &theme, &key);
             }
             None => {
                 if let Some(buf) = self.tabs.get_mut(self.active) {

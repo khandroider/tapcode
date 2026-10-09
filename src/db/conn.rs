@@ -36,8 +36,14 @@ impl Default for ConnConfig {
 }
 
 pub enum Cmd {
-    Query { text: String, allow_write: bool },
+    /// `tag` is echoed back in `Reply::Result` so the UI can route results (console, table grid…).
+    Query {
+        tag: String,
+        text: String,
+        allow_write: bool,
+    },
     Schema,
+    Databases,
     Keys(String),
     SetReadOnly(bool),
 }
@@ -50,18 +56,32 @@ pub struct ResultSet {
     pub elapsed_ms: u128,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
+pub struct Column {
+    pub name: String,
+    pub data_type: String,
+    pub default: Option<String>,
+    pub nullable: bool,
+    pub primary: bool,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct SchemaTable {
     pub schema: String,
     pub table: String,
-    pub columns: Vec<(String, String)>,
+    pub columns: Vec<Column>,
+    /// (constraint name, type, columns)
+    pub keys: Vec<(String, String, String)>,
+    /// (index name, definition)
+    pub indexes: Vec<(String, String)>,
 }
 
 pub enum Reply {
     Connected(String),
     Error(String),
-    Result(ResultSet),
+    Result(String, ResultSet),
     Schema(Vec<SchemaTable>),
+    Databases(Vec<String>),
     Keys(Vec<(String, String)>),
 }
 
@@ -214,7 +234,7 @@ fn pg_worker(cfg: ConnConfig, password: String, rx: Receiver<Cmd>, tx: Sender<Re
                     Err(e) => Reply::Error(e.to_string()),
                 }
             }
-            Cmd::Query { text, allow_write } => {
+            Cmd::Query { tag, text, allow_write } => {
                 let t0 = Instant::now();
                 // Server-side read-only is session wide; an explicit "execute anyway" opens a read-write transaction.
                 let sql = if read_only && allow_write {
@@ -223,7 +243,7 @@ fn pg_worker(cfg: ConnConfig, password: String, rx: Receiver<Cmd>, tx: Sender<Re
                     text.clone()
                 };
                 match client.simple_query(&sql) {
-                    Ok(msgs) => Reply::Result(collect(msgs, t0)),
+                    Ok(msgs) => Reply::Result(tag, collect(msgs, t0)),
                     Err(e) => {
                         if read_only && allow_write {
                             let _ = client.batch_execute("ROLLBACK");
@@ -232,28 +252,14 @@ fn pg_worker(cfg: ConnConfig, password: String, rx: Receiver<Cmd>, tx: Sender<Re
                     }
                 }
             }
-            Cmd::Schema => {
-                let q = "SELECT table_schema, table_name, column_name, data_type FROM information_schema.columns \
-                         WHERE table_schema NOT IN ('pg_catalog', 'information_schema') ORDER BY 1, 2, ordinal_position";
-                match client.query(q, &[]) {
-                    Ok(rows) => {
-                        let mut tables: Vec<SchemaTable> = Vec::new();
-                        for r in rows {
-                            let (s, t, c, d): (String, String, String, String) = (r.get(0), r.get(1), r.get(2), r.get(3));
-                            match tables.last_mut() {
-                                Some(last) if last.schema == s && last.table == t => last.columns.push((c, d)),
-                                _ => tables.push(SchemaTable {
-                                    schema: s,
-                                    table: t,
-                                    columns: vec![(c, d)],
-                                }),
-                            }
-                        }
-                        Reply::Schema(tables)
-                    }
-                    Err(e) => Reply::Error(e.to_string()),
-                }
-            }
+            Cmd::Databases => match client.query("SELECT datname FROM pg_database WHERE NOT datistemplate ORDER BY 1", &[]) {
+                Ok(rows) => Reply::Databases(rows.iter().map(|r| r.get::<_, String>(0)).collect()),
+                Err(e) => Reply::Error(e.to_string()),
+            },
+            Cmd::Schema => match load_schema(&mut client) {
+                Ok(t) => Reply::Schema(t),
+                Err(e) => Reply::Error(e.to_string()),
+            },
             Cmd::Keys(_) => Reply::Error("not a Redis connection".into()),
         };
         if tx.send(reply).is_err() {
@@ -261,6 +267,65 @@ fn pg_worker(cfg: ConnConfig, password: String, rx: Receiver<Cmd>, tx: Sender<Re
         }
         ctx.request_repaint();
     }
+}
+
+fn load_schema(client: &mut postgres::Client) -> Result<Vec<SchemaTable>, postgres::Error> {
+    let mut tables: Vec<SchemaTable> = Vec::new();
+    let q = "SELECT c.table_schema, c.table_name, c.column_name, c.data_type, c.column_default, c.is_nullable = 'YES',
+                    COALESCE(c.character_maximum_length::text, '') AS len
+             FROM information_schema.columns c
+             JOIN information_schema.tables t ON t.table_schema = c.table_schema AND t.table_name = c.table_name AND t.table_type = 'BASE TABLE'
+             WHERE c.table_schema NOT IN ('pg_catalog', 'information_schema') ORDER BY 1, 2, c.ordinal_position";
+    for r in client.query(q, &[])? {
+        let (s, t): (String, String) = (r.get(0), r.get(1));
+        let len: String = r.get(6);
+        let mut data_type: String = r.get(3);
+        if !len.is_empty() {
+            data_type = format!("{data_type}({len})");
+        }
+        let col = Column {
+            name: r.get(2),
+            data_type,
+            default: r.get(4),
+            nullable: r.get(5),
+            primary: false,
+        };
+        match tables.last_mut() {
+            Some(last) if last.schema == s && last.table == t => last.columns.push(col),
+            _ => tables.push(SchemaTable {
+                schema: s,
+                table: t,
+                columns: vec![col],
+                ..Default::default()
+            }),
+        }
+    }
+    let q = "SELECT tc.table_schema, tc.table_name, tc.constraint_name, tc.constraint_type, string_agg(kcu.column_name, ', ' ORDER BY kcu.ordinal_position)
+             FROM information_schema.table_constraints tc
+             JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = tc.constraint_name AND kcu.table_schema = tc.table_schema AND kcu.table_name = tc.table_name
+             WHERE tc.constraint_type IN ('PRIMARY KEY', 'FOREIGN KEY', 'UNIQUE') AND tc.table_schema NOT IN ('pg_catalog', 'information_schema')
+             GROUP BY 1, 2, 3, 4 ORDER BY 1, 2, 4, 3";
+    for r in client.query(q, &[])? {
+        let (s, t, name, kind, cols): (String, String, String, String, String) = (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4));
+        if let Some(tab) = tables.iter_mut().find(|x| x.schema == s && x.table == t) {
+            if kind == "PRIMARY KEY" {
+                for c in cols.split(", ") {
+                    if let Some(col) = tab.columns.iter_mut().find(|x| x.name == c) {
+                        col.primary = true;
+                    }
+                }
+            }
+            tab.keys.push((name, kind, cols));
+        }
+    }
+    let q = "SELECT schemaname, tablename, indexname, indexdef FROM pg_indexes WHERE schemaname NOT IN ('pg_catalog', 'information_schema') ORDER BY 1, 2, 3";
+    for r in client.query(q, &[])? {
+        let (s, t, name, def): (String, String, String, String) = (r.get(0), r.get(1), r.get(2), r.get(3));
+        if let Some(tab) = tables.iter_mut().find(|x| x.schema == s && x.table == t) {
+            tab.indexes.push((name, def));
+        }
+    }
+    Ok(tables)
 }
 
 fn collect(msgs: Vec<postgres::SimpleQueryMessage>, t0: Instant) -> ResultSet {
@@ -322,7 +387,8 @@ fn redis_worker(cfg: ConnConfig, password: String, rx: Receiver<Cmd>, tx: Sender
     for cmd in rx {
         let reply = match cmd {
             Cmd::SetReadOnly(ro) => Reply::Connected(if ro { "read-only".into() } else { "read-write".into() }),
-            Cmd::Query { text, .. } => {
+            Cmd::Databases => Reply::Databases((0..16).map(|i| i.to_string()).collect()),
+            Cmd::Query { tag, text, .. } => {
                 let t0 = Instant::now();
                 let args = split_args(&text);
                 match args.split_first() {
@@ -340,7 +406,7 @@ fn redis_worker(cfg: ConnConfig, password: String, rx: Receiver<Cmd>, tx: Sender
                                 };
                                 flatten(&v, "", &mut rs.rows);
                                 rs.elapsed_ms = t0.elapsed().as_millis();
-                                Reply::Result(rs)
+                                Reply::Result(tag, rs)
                             }
                             Err(e) => Reply::Error(e.to_string()),
                         }

@@ -162,6 +162,18 @@ impl EditorView<'_> {
         let word_bg = theme.c(&theme.ui.accent).gamma_multiply(0.18);
         let mut hovered_char: Option<usize> = None;
         let mut caret_screen: Option<(f32, f32)> = None;
+        // Cmd+click is read from the raw event so it works even when the pointer state was consumed elsewhere.
+        let cmd_click: Option<egui::Pos2> = ctx.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers,
+                } if modifiers.command => Some(*pos),
+                _ => None,
+            })
+        });
         let pointer_still = ctx.input(|i| i.pointer.time_since_last_movement()) > 0.45;
 
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(text_rect));
@@ -345,6 +357,13 @@ impl EditorView<'_> {
                         }
                     }
 
+                    if let Some(p) = cmd_click.filter(|p| row.contains(*p)) {
+                        let col = galley.cursor_from_pos(vec2(p.x - text_pos.x, 0.0)).index.0.min(line_len);
+                        let ch = line_start_char + col;
+                        out.goto = Some(ch);
+                        buf.set_cursor(ch, false);
+                        buf.scroll_to_cursor = false;
+                    }
                     // Mouse → caret. (double/triple fire on release, so they are checked separately)
                     if let Some(p) = pointer.filter(|p| row.contains(*p))
                         && (primary_pressed || (primary_down && resp.dragged()) || double || triple)
@@ -353,8 +372,7 @@ impl EditorView<'_> {
                         let col = galley.cursor_from_pos(rel).index.0.min(line_len);
                         let ch = line_start_char + col;
                         if primary_pressed && modifiers.command {
-                            out.goto = Some(ch);
-                            buf.set_cursor(ch, false);
+                            // handled above via the raw event
                         } else if triple {
                             buf.select_line(line);
                         } else if double {

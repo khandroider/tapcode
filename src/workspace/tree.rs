@@ -15,6 +15,8 @@ pub struct Tree {
     pub root: PathBuf,
     expanded: HashSet<PathBuf>,
     cache: HashMap<PathBuf, Vec<Entry>>,
+    /// Git-ignored paths (shown muted, like JetBrains), refreshed on invalidate.
+    ignored: HashSet<PathBuf>,
 }
 
 impl Tree {
@@ -23,33 +25,56 @@ impl Tree {
             root: root.clone(),
             expanded: HashSet::new(),
             cache: HashMap::new(),
+            ignored: HashSet::new(),
         };
         t.expanded.insert(root);
+        t.load_ignored();
         t
     }
 
     /// Drop cached listings so the next frame re-reads the disk.
     pub fn invalidate(&mut self) {
         self.cache.clear();
+        self.load_ignored();
+    }
+
+    fn load_ignored(&mut self) {
+        self.ignored = std::process::Command::new("git")
+            .args(["-C"])
+            .arg(&self.root)
+            .args(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"])
+            .output()
+            .ok()
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout)
+                    .split('\0')
+                    .filter(|s| !s.is_empty())
+                    .map(|s| self.root.join(s.trim_end_matches('/')))
+                    .collect()
+            })
+            .unwrap_or_default();
+    }
+
+    fn is_ignored(&self, p: &Path) -> bool {
+        p.ancestors().any(|a| self.ignored.contains(a))
     }
 
     fn children(&mut self, dir: &Path) -> Vec<Entry> {
         if let Some(c) = self.cache.get(dir) {
             return c.clone();
         }
-        let mut out: Vec<Entry> = ignore::WalkBuilder::new(dir)
-            .max_depth(Some(1))
-            .hidden(false)
-            .filter_entry(|e| !matches!(e.file_name().to_str(), Some(".git" | ".DS_Store" | ".tapcode")))
-            .build()
-            .flatten()
-            .filter(|e| e.depth() == 1)
-            .map(|e| Entry {
-                name: e.file_name().to_string_lossy().into_owned(),
-                is_dir: e.file_type().is_some_and(|t| t.is_dir()),
-                path: e.into_path(),
+        let mut out: Vec<Entry> = std::fs::read_dir(dir)
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| !matches!(e.file_name().to_str(), Some(".git" | ".DS_Store" | ".tapcode")))
+                    .map(|e| Entry {
+                        name: e.file_name().to_string_lossy().into_owned(),
+                        is_dir: e.file_type().is_ok_and(|t| t.is_dir()),
+                        path: e.path(),
+                    })
+                    .collect()
             })
-            .collect();
+            .unwrap_or_default();
         out.sort_by(|a, b| {
             b.is_dir
                 .cmp(&a.is_dir)
@@ -88,7 +113,15 @@ impl Tree {
             let indent = 12.0 * depth as f32 + 4.0;
             let is_open = e.is_dir && self.expanded.contains(&e.path);
             let is_sel = selected == Some(e.path.as_path());
-            let text = egui::RichText::new(&e.name).color(if e.is_dir { accent } else { theme.c(&theme.ui.fg) });
+            let ignored = self.is_ignored(&e.path);
+            let color = if ignored {
+                theme.c(&theme.ui.fg_muted)
+            } else if e.is_dir {
+                accent
+            } else {
+                theme.c(&theme.ui.fg)
+            };
+            let text = egui::RichText::new(&e.name).color(color);
             let r = ui.horizontal(|ui| {
                 ui.add_space(indent);
                 let (icon_rect, icon_resp) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());

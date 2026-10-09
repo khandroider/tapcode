@@ -59,7 +59,14 @@ impl Lsp {
         }
         if !self.clients.contains_key(key) {
             let cmd = if key == "php" { &settings.lsp_php } else { &settings.lsp_ts };
-            let init = if key == "ts" {
+            let init = if key == "php" {
+                // Persist intelephense's index between launches instead of re-indexing every start.
+                let storage = directories::ProjectDirs::from("", "", "tapcode")
+                    .map(|d| d.data_dir().join("intelephense"))
+                    .unwrap_or_else(|| std::env::temp_dir().join("tapcode-intelephense"));
+                let _ = std::fs::create_dir_all(&storage);
+                serde_json::json!({"storagePath": storage, "clearCache": false})
+            } else if key == "ts" {
                 match resolve_tsserver(root, &settings.tsserver_path) {
                     Some(p) => serde_json::json!({"tsserver": {"path": p}}),
                     None => {
@@ -97,7 +104,18 @@ impl Lsp {
         let mut parts: Vec<String> = self
             .clients
             .iter()
-            .map(|(k, c)| format!("{k}:{}", if c.ready { "ready" } else { "starting" }))
+            .map(|(k, c)| {
+                format!(
+                    "{k}: {}",
+                    if !c.ready {
+                        "starting"
+                    } else if c.indexing {
+                        "indexing…"
+                    } else {
+                        "ready"
+                    }
+                )
+            })
             .collect();
         parts.extend(self.failed.iter().map(|(k, e)| format!("{k}: {e}")));
         parts.join("  ")
