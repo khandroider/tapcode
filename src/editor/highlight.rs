@@ -36,6 +36,8 @@ pub const NAMES: &[&str] = &[
     "text.literal",
     "text.emphasis",
     "text.strong",
+    "field",
+    "function.call",
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

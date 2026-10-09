@@ -1,0 +1,15 @@
+# Local services for trying the Database panel: `docker compose -f dev/docker-compose.yml up -d`
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: code-editor-pg
+    environment:
+      POSTGRES_PASSWORD: devpass
+      POSTGRES_DB: demo
+    ports:
+      - "5440:5432"
+  redis:
+    image: redis:7-alpine
+    container_name: code-editor-redis
+    ports:
+      - "6390:6379"

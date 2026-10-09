@@ -34,6 +34,13 @@ portable-pty = "0.9.0"
 alacritty_terminal = "0.26.0"
 lsp-types = "0.97.0"
 serde_json = "1.0.151"
+postgres = "0.19.14"
+redis = "1.7.1"
+sqlparser = "0.63.0"
+tree-sitter-sequel = "0.3.11"
+bollard = "0.21.1"
+tokio = { version = "1.53.2", features = ["rt-multi-thread"] }
+futures-util = "0.3.34"
 
 [profile.dev]
 opt-level = 1

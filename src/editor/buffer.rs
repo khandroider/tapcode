@@ -74,6 +74,8 @@ pub struct Buffer {
     pub completion_pending: Option<bool>,
     pub hover: Option<HoverState>,
     pub lsp_version: u64,
+    /// In-memory only (SQL console): never written to disk.
+    pub is_virtual: bool,
 }
 
 impl Buffer {
@@ -106,6 +108,7 @@ impl Buffer {
             completion_pending: None,
             hover: None,
             lsp_version: u64::MAX,
+            is_virtual: false,
         }
     }
 
@@ -159,6 +162,10 @@ impl Buffer {
     // ---- persistence -------------------------------------------------
 
     pub fn save(&mut self) -> Result<()> {
+        if self.is_virtual {
+            self.dirty = false;
+            return Ok(());
+        }
         let tmp = self
             .path
             .with_extension(format!("{}.tmp~", self.path.extension().and_then(|e| e.to_str()).unwrap_or("")));

@@ -17,6 +17,7 @@ pub struct Settings {
     pub lsp_ts: Vec<String>,
     /// Explicit tsserver.js path; empty = project node_modules, then npx cache.
     pub tsserver_path: String,
+    pub connections: Vec<crate::db::conn::ConnConfig>,
 }
 
 impl Default for Settings {
@@ -31,6 +32,7 @@ impl Default for Settings {
             lsp_php: ["npx", "-y", "intelephense", "--stdio"].map(String::from).to_vec(),
             lsp_ts: ["npx", "-y", "typescript-language-server", "--stdio"].map(String::from).to_vec(),
             tsserver_path: String::new(),
+            connections: Vec::new(),
         }
     }
 }

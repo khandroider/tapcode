@@ -1,3 +1,4 @@
+use crate::db::ui::DbPanel;
 use crate::editor::buffer::Buffer;
 use crate::editor::view::{EditorView, editor_id};
 use crate::git::cmd as gitcmd;
@@ -25,6 +26,8 @@ pub struct App {
     show_git: bool,
     terminal: Option<TerminalPanel>,
     show_terminal: bool,
+    db: DbPanel,
+    show_db: bool,
     search: SearchUi,
     tabs: Vec<Buffer>,
     active: usize,
@@ -45,6 +48,7 @@ impl App {
         install_fonts(&cc.egui_ctx, settings.font_size);
         let theme = theme::load(&settings.theme);
         theme.apply(&cc.egui_ctx);
+        let db = DbPanel::new(settings.connections.clone());
         let mut app = Self {
             theme,
             settings,
@@ -54,6 +58,8 @@ impl App {
             show_git: false,
             terminal: None,
             show_terminal: false,
+            db,
+            show_db: false,
             search: SearchUi::default(),
             tabs: Vec::new(),
             active: 0,
@@ -83,6 +89,16 @@ impl App {
         {
             if mode == "terminal" {
                 app.show_terminal = true;
+                return app;
+            }
+            if mode == "db" {
+                // db:<name>:<password>:<statement>
+                app.show_db = true;
+                let mut it = q.splitn(3, ':');
+                let (name, pw, stmt) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next().unwrap_or(""));
+                if !name.is_empty() {
+                    app.db.demo_connect(name, pw, stmt, &cc.egui_ctx);
+                }
                 return app;
             }
             if mode == "lsp" {
@@ -371,6 +387,7 @@ impl App {
             Action::ReplaceInPath => self.search.open(Mode::Text, true, self.selected_word()),
             Action::ToggleGit => self.show_git = !self.show_git,
             Action::ToggleTerminal => self.show_terminal = !self.show_terminal,
+            Action::ToggleDatabase => self.show_db = !self.show_db,
             Action::Commit => {
                 if let Some(g) = &mut self.git {
                     self.show_git = true;
@@ -474,6 +491,7 @@ impl App {
                 ui.checkbox(&mut self.show_project, "Project panel");
                 ui.checkbox(&mut self.show_git, "Git panel");
                 ui.checkbox(&mut self.show_terminal, "Terminal");
+                ui.checkbox(&mut self.show_db, "Database");
                 ui.separator();
                 ui.label("Theme");
                 for n in theme::names() {
@@ -633,6 +651,12 @@ impl eframe::App for App {
             g.dialogs(&ctx, &theme);
         }
         self.lsp_tick(&ctx);
+        self.db.tick(&ctx);
+        if self.db.settings_dirty {
+            self.db.settings_dirty = false;
+            self.settings.connections = self.db.connections.clone();
+            self.settings.save();
+        }
         if self.search.open {
             let theme = self.theme.clone();
             if let Some(pick) = self.search.show(&ctx, self.index.as_ref(), &theme) {
@@ -712,6 +736,13 @@ impl eframe::App for App {
             }
         }
 
+        if self.show_db {
+            let theme = self.theme.clone();
+            let font = ui.style().text_styles[&TextStyle::Monospace].clone();
+            egui::Panel::bottom("database")
+                .default_size(360.0)
+                .show(ui, |ui| self.db.show(ui, &theme, font));
+        }
         if self.show_terminal
             && let Some(t) = &mut self.terminal
         {

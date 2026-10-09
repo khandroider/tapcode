@@ -16,6 +16,7 @@ pub enum Lang {
     Css,
     Markdown,
     Yaml,
+    Sql,
     Plain,
 }
 
@@ -32,6 +33,7 @@ impl Lang {
             "css" | "scss" | "less" => Lang::Css,
             "md" | "markdown" => Lang::Markdown,
             "yml" | "yaml" => Lang::Yaml,
+            "sql" | "pgsql" | "psql" => Lang::Sql,
             _ => Lang::Plain,
         }
     }
@@ -48,6 +50,7 @@ impl Lang {
             Lang::Css => "CSS",
             Lang::Markdown => "Markdown",
             Lang::Yaml => "YAML",
+            Lang::Sql => "SQL",
             Lang::Plain => "Plain text",
         }
     }
@@ -56,13 +59,14 @@ impl Lang {
         match self {
             Lang::Php | Lang::Js | Lang::Jsx | Lang::Ts | Lang::Tsx => Some("//"),
             Lang::Yaml => Some("#"),
+            Lang::Sql => Some("--"),
             _ => None,
         }
     }
 
     /// Highlight configuration, built once per language. `None` for plain text.
     pub fn config(self) -> Option<&'static HighlightConfiguration> {
-        static CONFIGS: [OnceLock<Option<HighlightConfiguration>>; 10] = [const { OnceLock::new() }; 10];
+        static CONFIGS: [OnceLock<Option<HighlightConfiguration>>; 11] = [const { OnceLock::new() }; 11];
         let idx = match self {
             Lang::Php => 0,
             Lang::Js => 1,
@@ -74,6 +78,7 @@ impl Lang {
             Lang::Css => 7,
             Lang::Markdown => 8,
             Lang::Yaml => 9,
+            Lang::Sql => 10,
             Lang::Plain => return None,
         };
         CONFIGS[idx].get_or_init(|| build(self)).as_ref()
@@ -145,6 +150,13 @@ fn build(lang: Lang) -> Option<HighlightConfiguration> {
             "",
             "",
         ),
+        Lang::Sql => (
+            tree_sitter_sequel::LANGUAGE.into(),
+            "sql",
+            tree_sitter_sequel::HIGHLIGHTS_QUERY,
+            "",
+            "",
+        ),
         Lang::Plain => return None,
     };
     match HighlightConfiguration::new(language, name, hl, inj, loc) {
@@ -171,6 +183,7 @@ pub fn by_name(name: &str) -> Option<&'static HighlightConfiguration> {
         "css" => Lang::Css.config(),
         "yaml" => Lang::Yaml.config(),
         "markdown" => Lang::Markdown.config(),
+        "sql" => Lang::Sql.config(),
         _ => None,
     }
 }
