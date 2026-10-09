@@ -31,6 +31,7 @@ pub struct App {
     show_db: bool,
     docker: Option<DockerPanel>,
     show_docker: bool,
+    settings_dialog: Option<Settings>,
     search: SearchUi,
     tabs: Vec<Buffer>,
     active: usize,
@@ -65,6 +66,7 @@ impl App {
             show_db: false,
             docker: None,
             show_docker: false,
+            settings_dialog: None,
             search: SearchUi::default(),
             tabs: Vec::new(),
             active: 0,
@@ -399,6 +401,7 @@ impl App {
             Action::ToggleTerminal => self.show_terminal = !self.show_terminal,
             Action::ToggleDatabase => self.show_db = !self.show_db,
             Action::ToggleDocker => self.show_docker = !self.show_docker,
+            Action::Settings => self.settings_dialog = Some(self.settings.clone()),
             Action::Commit => {
                 if let Some(g) = &mut self.git {
                     self.show_git = true;
@@ -454,7 +457,7 @@ impl App {
                     }
                 });
                 ui.separator();
-                for a in [Action::SaveAll, Action::CloseTab] {
+                for a in [Action::SaveAll, Action::CloseTab, Action::Settings] {
                     if ui
                         .add(egui::Button::new(keymap::label(a)).shortcut_text(keymap::shortcut_text(&ctx, a)))
                         .clicked()
@@ -546,6 +549,116 @@ impl App {
         if let Some(i) = close {
             self.close_tab(i);
         }
+    }
+
+    fn settings_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut draft) = self.settings_dialog.take() else { return };
+        let mut keep = true;
+        let mut apply = false;
+        let m = egui::Modal::new(egui::Id::new("settings")).show(ctx, |ui| {
+            ui.set_width(520.0);
+            ui.heading("Settings");
+            egui::Grid::new("settings-grid").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+                ui.label("Theme");
+                ui.horizontal(|ui| {
+                    for n in theme::names() {
+                        ui.selectable_value(&mut draft.theme, n.to_owned(), n);
+                    }
+                });
+                ui.end_row();
+                ui.label("Font size");
+                ui.add(egui::Slider::new(&mut draft.font_size, 10.0..=20.0).step_by(1.0));
+                ui.end_row();
+                ui.label("Autosave");
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut draft.autosave, "enabled");
+                    ui.add(
+                        egui::DragValue::new(&mut draft.autosave_delay_ms)
+                            .range(200..=10_000)
+                            .suffix(" ms")
+                            .speed(50),
+                    );
+                });
+                ui.end_row();
+                let mut php = draft.lsp_php.join(" ");
+                ui.label("PHP language server");
+                if ui.add(egui::TextEdit::singleline(&mut php).desired_width(f32::INFINITY)).changed() {
+                    draft.lsp_php = php.split_whitespace().map(String::from).collect();
+                }
+                ui.end_row();
+                let mut ts = draft.lsp_ts.join(" ");
+                ui.label("JS/TS language server");
+                if ui.add(egui::TextEdit::singleline(&mut ts).desired_width(f32::INFINITY)).changed() {
+                    draft.lsp_ts = ts.split_whitespace().map(String::from).collect();
+                }
+                ui.end_row();
+                ui.label("tsserver.js path");
+                ui.add(
+                    egui::TextEdit::singleline(&mut draft.tsserver_path)
+                        .hint_text("auto (project node_modules or npx cache)")
+                        .desired_width(f32::INFINITY),
+                );
+                ui.end_row();
+            });
+            ui.label(
+                egui::RichText::new("Language server changes apply to servers started after saving.")
+                    .small()
+                    .color(self.theme.c(&self.theme.ui.fg_muted)),
+            );
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    keep = false;
+                }
+                if ui.button("Save").clicked() {
+                    apply = true;
+                    keep = false;
+                }
+            });
+        });
+        if m.should_close() {
+            keep = false;
+        }
+        if apply {
+            if (draft.font_size - self.settings.font_size).abs() > f32::EPSILON {
+                install_fonts(ctx, draft.font_size);
+            }
+            if draft.theme != self.settings.theme {
+                self.theme = theme::load(&draft.theme);
+                self.theme.apply(ctx);
+            }
+            self.settings = draft;
+            self.settings.save();
+        } else if keep {
+            self.settings_dialog = Some(draft);
+        }
+    }
+
+    fn welcome(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let muted = self.theme.c(&self.theme.ui.fg_muted);
+        let mut open: Option<PathBuf> = None;
+        ui.vertical_centered(|ui| {
+            ui.add_space(ui.available_height() * 0.25);
+            ui.heading("code-editor");
+            ui.label(egui::RichText::new("Open a folder to start, or pick a recent project").color(muted));
+            ui.add_space(12.0);
+            if ui
+                .button("Open Folder…  (Cmd+Shift+O after a project is open: go to file)")
+                .clicked()
+                && let Some(p) = rfd::FileDialog::new().pick_folder()
+            {
+                open = Some(p);
+            }
+            ui.add_space(12.0);
+            for p in self.settings.recent_projects.clone() {
+                if ui.link(p.display().to_string()).clicked() {
+                    open = Some(p);
+                }
+            }
+        });
+        if let Some(p) = open {
+            self.open_folder(p);
+        }
+        let _ = ctx;
     }
 
     fn recent_files_popup(&mut self, ctx: &egui::Context) {
@@ -798,6 +911,10 @@ impl eframe::App for App {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(self.theme.c(&self.theme.ui.bg)))
             .show(ui, |ui| {
+                if self.tree.is_none() {
+                    self.welcome(ui, &ctx);
+                    return;
+                }
                 if self.tabs.is_empty() {
                     ui.centered_and_justified(|ui| {
                         ui.label(
@@ -829,5 +946,6 @@ impl eframe::App for App {
         self.lsp_request(editor_out, &ctx);
 
         self.recent_files_popup(&ctx);
+        self.settings_dialog(&ctx);
     }
 }

@@ -154,7 +154,7 @@ CREATE INDEX symbols_name ON symbols(name COLLATE NOCASE);
 
 ## Фазы реализации
 
-Каждая фаза заканчивается запускаемым приложением и коммитом.
+Каждая фаза заканчивается запускаемым приложением и коммитом. **Статус (2026-10-09): фазы 0–8 реализованы**, см. `git log`.
 
 **Фаза 0 — Bootstrap.** rustup, `cargo new`, MIT LICENSE, README, .gitignore, `git init` + первый коммит. Пустое eframe-окно с темой Palenight и шрифтом. Проверка: `cargo run` открывает окно.
 
@@ -175,6 +175,11 @@ CREATE INDEX symbols_name ON symbols(name COLLATE NOCASE);
 **Фаза 8 — Полировка.** Переключение тем, settings UI, recent projects, `cargo build --release` + `.app` bundle через `cargo-bundle`, README с скриншотами.
 
 ## Сознательные упрощения (ponytail)
+
+- Позиции LSP считаются в char-индексах, а не UTF-16 (расходится только на не-BMP символах в строке).
+- Полная переподсветка файла на каждое изменение; инкрементальный tree-sitter — когда файлы > 1 МБ начнут тормозить.
+- Нет merge-tool для конфликтов: файлы с конфликтом помечены, правятся в редакторе.
+- Redis read-only: статический список пишущих команд.
 
 - Один крейт, не workspace — разбивать, когда `cargo build` станет > 1 мин инкрементально.
 - Git через CLI — без libgit2; если понадобится работа без установленного git, добавим `git2`.
