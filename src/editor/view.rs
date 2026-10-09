@@ -363,6 +363,7 @@ impl EditorView<'_> {
                         out.goto = Some(ch);
                         buf.set_cursor(ch, false);
                         buf.scroll_to_cursor = false;
+                        crate::tlog!("cmd+click at {}:{} in {}", line + 1, col, buf.path.display());
                     }
                     // Mouse → caret. (double/triple fire on release, so they are checked separately)
                     if let Some(p) = pointer.filter(|p| row.contains(*p))

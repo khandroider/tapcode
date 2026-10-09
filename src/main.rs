@@ -7,6 +7,7 @@ mod editor;
 mod git;
 mod index;
 mod keymap;
+mod log;
 mod lsp;
 mod search_ui;
 mod settings;
@@ -19,7 +20,11 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_title("tapcode")
             .with_inner_size([1400.0, 900.0])
-            .with_min_inner_size([800.0, 500.0]),
+            .with_min_inner_size([800.0, 500.0])
+            // JetBrains-style dark title bar: window content extends under the traffic lights.
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_title_shown(false),
         ..Default::default()
     };
     // `tapcode [folder] [file...]` — like `idea .`

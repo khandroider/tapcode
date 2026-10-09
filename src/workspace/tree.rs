@@ -124,11 +124,20 @@ impl Tree {
             let text = egui::RichText::new(&e.name).color(color);
             let r = ui.horizontal(|ui| {
                 ui.add_space(indent);
-                let (icon_rect, icon_resp) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                let (icon_rect, icon_resp) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::click());
                 if e.is_dir {
-                    egui::collapsing_header::paint_default_icon(ui, if is_open { 1.0 } else { 0.0 }, &icon_resp.with_new_rect(icon_rect));
+                    egui::collapsing_header::paint_default_icon(
+                        ui,
+                        if is_open { 1.0 } else { 0.0 },
+                        &icon_resp.clone().with_new_rect(icon_rect),
+                    );
                 }
-                ui.selectable_label(is_sel, text)
+                let label = ui.selectable_label(is_sel, text);
+                if icon_resp.clicked() {
+                    label.clone().with_new_rect(icon_rect)
+                } else {
+                    label
+                }
             });
             if r.inner.clicked() {
                 if e.is_dir {

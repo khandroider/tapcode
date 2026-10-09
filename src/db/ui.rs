@@ -41,6 +41,15 @@ pub struct TableView {
     pub page: usize,
     pub result: Option<ResultSet>,
     pub total: Option<u64>,
+    /// Primary-key column names (needed to UPDATE / DELETE).
+    pub pk: Vec<String>,
+    /// Pending cell edits: (row, col) → new value ("NULL" = SQL NULL).
+    pub edits: HashMap<(usize, usize), String>,
+    pub deleted: HashSet<usize>,
+    pub new_rows: Vec<Vec<String>>,
+    /// Cell currently being typed into: (row, col, buffer); rows >= result.rows.len() are new rows.
+    pub editing: Option<(usize, usize, String)>,
+    pub selected_row: Option<usize>,
 }
 
 pub struct DbPanel {
@@ -60,7 +69,7 @@ pub struct DbPanel {
     tables: HashMap<String, TableView>,
     expanded: HashSet<String>,
     key_filter: String,
-    confirm: Option<(String, String, String)>,
+    confirm: Option<(String, String, String, String)>,
     page: usize,
     pub run_on_connect: Option<(String, String)>,
     pub log: Vec<String>,
@@ -172,6 +181,15 @@ impl DbPanel {
                             && let Some(t) = self.tables.get_mut(tk)
                         {
                             t.total = rs.rows.first().and_then(|r| r.first()).and_then(|v| v.parse().ok());
+                        } else if let Some(tk) = tag.strip_prefix("submit:") {
+                            if let Some(t) = self.tables.get_mut(tk) {
+                                t.edits.clear();
+                                t.deleted.clear();
+                                t.new_rows.clear();
+                                t.editing = None;
+                            }
+                            let tk = tk.to_owned();
+                            self.load_table(&tk);
                         }
                     }
                     Reply::Schema(t) => {
@@ -273,7 +291,7 @@ impl DbPanel {
                 guard::classify_redis(&text)
             };
             if let Verdict::Write(kind) = verdict {
-                self.confirm = Some((key.to_owned(), text, kind));
+                self.confirm = Some((key.to_owned(), tag.to_owned(), text, kind));
                 return;
             }
         }
@@ -309,6 +327,12 @@ impl DbPanel {
 
     fn open_table(&mut self, session: &str, schema: &str, table: &str, ctx: &egui::Context) -> DbPick {
         let key = format!("{session}/{schema}.{table}");
+        let pk: Vec<String> = self
+            .schema
+            .get(session)
+            .and_then(|ts| ts.iter().find(|t| t.schema == schema && t.table == table))
+            .map(|t| t.columns.iter().filter(|c| c.primary).map(|c| c.name.clone()).collect())
+            .unwrap_or_default();
         self.tables.entry(key.clone()).or_insert_with(|| TableView {
             session: session.to_owned(),
             schema: schema.to_owned(),
@@ -318,6 +342,12 @@ impl DbPanel {
             page: 0,
             result: None,
             total: None,
+            pk,
+            edits: HashMap::new(),
+            deleted: HashSet::new(),
+            new_rows: Vec::new(),
+            editing: None,
+            selected_row: None,
         });
         if !self.sessions.contains_key(session) {
             self.connect(session, ctx);
@@ -354,6 +384,73 @@ impl DbPanel {
                 allow_write: false,
             });
         }
+    }
+
+    fn sql_lit(v: &str) -> String {
+        if v == "NULL" {
+            "NULL".to_owned()
+        } else {
+            format!("'{}'", v.replace('\'', "''"))
+        }
+    }
+
+    /// Builds UPDATE / DELETE / INSERT statements for the pending grid changes.
+    fn submit_sql(t: &TableView) -> Result<String, String> {
+        let Some(rs) = &t.result else { return Err("nothing loaded".into()) };
+        let q = |s: &str| format!("\"{s}\"");
+        let table = format!("{}.{}", q(&t.schema), q(&t.table));
+        let pk_idx: Vec<usize> = t.pk.iter().filter_map(|p| rs.columns.iter().position(|c| c == p)).collect();
+        let where_for = |row: &Vec<String>| -> Result<String, String> {
+            if pk_idx.is_empty() {
+                return Err("table has no primary key; edit it from the console instead".into());
+            }
+            Ok(pk_idx
+                .iter()
+                .map(|&i| format!("{} = {}", q(&rs.columns[i]), Self::sql_lit(&row[i])))
+                .collect::<Vec<_>>()
+                .join(" AND "))
+        };
+        let mut stmts = Vec::new();
+        let mut by_row: HashMap<usize, Vec<(usize, &String)>> = HashMap::new();
+        for ((r, c), v) in &t.edits {
+            if *r < rs.rows.len() && !t.deleted.contains(r) {
+                by_row.entry(*r).or_default().push((*c, v));
+            }
+        }
+        let mut rows: Vec<_> = by_row.into_iter().collect();
+        rows.sort_by_key(|(r, _)| *r);
+        for (r, cols) in rows {
+            let set = cols
+                .iter()
+                .map(|(c, v)| format!("{} = {}", q(&rs.columns[*c]), Self::sql_lit(v)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            stmts.push(format!("UPDATE {table} SET {set} WHERE {}", where_for(&rs.rows[r])?));
+        }
+        let mut del: Vec<_> = t.deleted.iter().copied().filter(|r| *r < rs.rows.len()).collect();
+        del.sort();
+        for r in del {
+            stmts.push(format!("DELETE FROM {table} WHERE {}", where_for(&rs.rows[r])?));
+        }
+        for (i, row) in t.new_rows.iter().enumerate() {
+            let mut cols = Vec::new();
+            let mut vals = Vec::new();
+            for (c, name) in rs.columns.iter().enumerate() {
+                let v = t.edits.get(&(rs.rows.len() + i, c)).cloned().unwrap_or_else(|| row[c].clone());
+                if !v.is_empty() {
+                    cols.push(q(name));
+                    vals.push(Self::sql_lit(&v));
+                }
+            }
+            if cols.is_empty() {
+                continue;
+            }
+            stmts.push(format!("INSERT INTO {table} ({}) VALUES ({})", cols.join(", "), vals.join(", ")));
+        }
+        if stmts.is_empty() {
+            return Err("no changes".into());
+        }
+        Ok(stmts.join(";\n"))
     }
 
     fn new_edit(cfg: ConnConfig, original: Option<String>) -> EditState {
@@ -816,9 +913,56 @@ impl DbPanel {
             return;
         };
         let mut reload = false;
+        let mut submit: Option<Result<String, String>> = None;
         ui.horizontal(|ui| {
-            if ui.button("⟳").on_hover_text("Reload").clicked() {
+            if ui.button("⟳").on_hover_text("Reload (discards pending edits)").clicked() {
+                t.edits.clear();
+                t.deleted.clear();
+                t.new_rows.clear();
+                t.editing = None;
                 reload = true;
+            }
+            let ncols = t.result.as_ref().map(|r| r.columns.len()).unwrap_or(0);
+            if ui
+                .add_enabled(ncols > 0, egui::Button::new("+ Row"))
+                .on_hover_text("Add row")
+                .clicked()
+            {
+                t.new_rows.push(vec![String::new(); ncols]);
+            }
+            let sel = t.selected_row;
+            if ui
+                .add_enabled(sel.is_some(), egui::Button::new("− Row"))
+                .on_hover_text("Delete selected row")
+                .clicked()
+                && let Some(r) = sel
+            {
+                let n = t.result.as_ref().map(|r| r.rows.len()).unwrap_or(0);
+                if r >= n {
+                    let i = r - n;
+                    if i < t.new_rows.len() {
+                        t.new_rows.remove(i);
+                    }
+                } else if !t.deleted.remove(&r) {
+                    t.deleted.insert(r);
+                }
+            }
+            let pending = t.edits.len() + t.deleted.len() + t.new_rows.len();
+            if ui
+                .add_enabled(
+                    pending > 0,
+                    egui::Button::new(format!("Submit ({pending})")).fill(theme.c(&theme.ui.accent).gamma_multiply(0.6)),
+                )
+                .on_hover_text("Run UPDATE / DELETE / INSERT for the pending changes")
+                .clicked()
+            {
+                submit = Some(Self::submit_sql(t));
+            }
+            if ui.add_enabled(pending > 0, egui::Button::new("Revert")).clicked() {
+                t.edits.clear();
+                t.deleted.clear();
+                t.new_rows.clear();
+                t.editing = None;
             }
             let total = t.total;
             let pages = total.map(|n| (n as usize).div_ceil(GRID_PAGE).max(1)).unwrap_or(1);
@@ -865,14 +1009,29 @@ impl DbPanel {
         if let Some(e) = err {
             ui.label(RichText::new(e).color(theme.c(&theme.ui.error)));
         }
+        let mut sort: Option<String> = None;
         match &t.result {
-            Some(rs) => grid(ui, rs, theme, true),
+            Some(_) => sort = editable_grid(ui, t, theme),
             None => {
                 ui.label(RichText::new("Loading…").color(muted));
             }
         }
+        if let Some(col) = sort {
+            let asc = format!("\"{col}\" ASC");
+            t.order = if t.order == asc { format!("\"{col}\" DESC") } else { asc };
+            t.page = 0;
+            reload = true;
+        }
+        let session = t.session.clone();
         if reload {
             self.load_table(key);
+        }
+        match submit {
+            Some(Ok(sql)) => self.execute(&session, &format!("submit:{key}"), sql, false),
+            Some(Err(e)) => {
+                self.errors.insert(session, e);
+            }
+            None => {}
         }
     }
 
@@ -928,24 +1087,27 @@ impl DbPanel {
                 }
             }
         });
-        let console_h = (ui.available_height() * 0.4).clamp(100.0, 320.0);
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), console_h), egui::Sense::hover());
-        let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-        if let Some(buf) = self.consoles.get_mut(key) {
-            EditorView {
-                buf,
-                theme,
-                font,
-                marks: &[],
-                blame: None,
-            }
-            .show(&mut cui);
-            buf.completion = None;
-            if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) && connected {
-                to_run = Some(Self::current_statement(buf, sql));
-            }
-        }
-        ui.separator();
+        egui::Panel::top(egui::Id::new("db-console-editor").with(key))
+            .default_size(180.0)
+            .resizable(true)
+            .show(ui, |ui| {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ui.available_height()), egui::Sense::hover());
+                let mut cui = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+                if let Some(buf) = self.consoles.get_mut(key) {
+                    EditorView {
+                        buf,
+                        theme,
+                        font: font.clone(),
+                        marks: &[],
+                        blame: None,
+                    }
+                    .show(&mut cui);
+                    buf.completion = None;
+                    if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) && connected {
+                        to_run = Some(Self::current_statement(buf, sql));
+                    }
+                }
+            });
         if let Some(rs) = self.results.get(key) {
             ui.horizontal(|ui| {
                 let summary = match rs.affected {
@@ -985,7 +1147,7 @@ impl DbPanel {
     // ---- Dialogs ----------------------------------------------------------------
 
     pub fn dialogs(&mut self, ctx: &egui::Context, theme: &Theme) {
-        if let Some((key, text, kind)) = self.confirm.take() {
+        if let Some((key, tag, text, kind)) = self.confirm.take() {
             let mut keep = true;
             let mut run = false;
             let m = egui::Modal::new(egui::Id::new("db-ro-confirm")).show(ctx, |ui| {
@@ -1006,9 +1168,9 @@ impl DbPanel {
                 keep = false;
             }
             if run {
-                self.execute(&key, "console", text, true);
+                self.execute(&key, &tag, text, true);
             } else if keep {
-                self.confirm = Some((key, text, kind));
+                self.confirm = Some((key, tag, text, kind));
             }
         }
         let Some(mut e) = self.editing.take() else { return };
@@ -1146,6 +1308,133 @@ impl DbPanel {
             self.editing = Some(e);
         }
     }
+}
+
+/// Table editor grid: click a header to sort, double-click a cell to edit, click a row number to select it.
+/// Returns the column name when a header was clicked.
+fn editable_grid(ui: &mut egui::Ui, t: &mut TableView, theme: &Theme) -> Option<String> {
+    let muted = theme.c(&theme.ui.fg_muted);
+    let accent = theme.c(&theme.ui.accent);
+    let edited_bg = theme.c(&theme.ui.warning).gamma_multiply(0.25);
+    let deleted_bg = theme.c(&theme.ui.error).gamma_multiply(0.2);
+    let new_bg = theme.c(&theme.ui.success).gamma_multiply(0.18);
+    let mut sort = None;
+    let rs = t.result.as_ref()?;
+    let columns = rs.columns.clone();
+    let base_rows = rs.rows.len();
+    let mut all_rows: Vec<Vec<String>> = rs.rows.clone();
+    all_rows.extend(t.new_rows.iter().cloned());
+    let mut commit: Option<(usize, usize, String)> = None;
+    let mut cancel = false;
+    let mut start_edit: Option<(usize, usize)> = None;
+    let mut select: Option<usize> = None;
+    egui::ScrollArea::both().id_salt("db-table-grid").auto_shrink(false).show(ui, |ui| {
+        egui::Grid::new("db-table-inner").striped(true).spacing([18.0, 3.0]).show(ui, |ui| {
+            ui.label(RichText::new("#").color(muted));
+            for c in &columns {
+                let sorted = t.order.contains(&format!("\"{c}\""));
+                let arrow = if !sorted {
+                    ""
+                } else if t.order.ends_with("DESC") {
+                    " ▼"
+                } else {
+                    " ▲"
+                };
+                let pk = if t.pk.contains(c) { "PK " } else { "" };
+                if ui
+                    .add(egui::Label::new(RichText::new(format!("{pk}{c}{arrow}")).strong().color(accent)).sense(egui::Sense::click()))
+                    .on_hover_text("Click to sort")
+                    .clicked()
+                {
+                    sort = Some(c.clone());
+                }
+            }
+            ui.end_row();
+            for (r, row) in all_rows.iter().enumerate() {
+                let is_new = r >= base_rows;
+                let is_del = t.deleted.contains(&r);
+                let num = if is_new {
+                    format!("+{}", r - base_rows + 1)
+                } else {
+                    (r + 1).to_string()
+                };
+                let num_r = ui.selectable_label(t.selected_row == Some(r), RichText::new(num).monospace().color(muted));
+                if num_r.clicked() {
+                    select = Some(r);
+                }
+                for (c, cell) in row.iter().enumerate() {
+                    if let Some((er, ec, buf)) = &mut t.editing
+                        && *er == r
+                        && *ec == c
+                    {
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(buf)
+                                .desired_width(160.0)
+                                .font(egui::TextStyle::Monospace),
+                        );
+                        resp.request_focus();
+                        if ui.input(|i| i.key_pressed(Key::Enter)) {
+                            commit = Some((r, c, buf.clone()));
+                        } else if ui.input(|i| i.key_pressed(Key::Escape)) {
+                            cancel = true;
+                        }
+                        continue;
+                    }
+                    let shown = t.edits.get(&(r, c)).cloned().unwrap_or_else(|| cell.clone());
+                    let text = if shown.chars().count() > 80 {
+                        format!("{}…", shown.chars().take(80).collect::<String>())
+                    } else {
+                        shown.clone()
+                    };
+                    let color = if shown == "NULL" { muted } else { theme.c(&theme.ui.fg) };
+                    let bg = if is_del {
+                        deleted_bg
+                    } else if t.edits.contains_key(&(r, c)) {
+                        edited_bg
+                    } else if is_new {
+                        new_bg
+                    } else {
+                        egui::Color32::TRANSPARENT
+                    };
+                    let label = egui::Label::new(
+                        RichText::new(if text.is_empty() && is_new { "…" } else { &text })
+                            .monospace()
+                            .color(color)
+                            .background_color(bg),
+                    )
+                    .sense(egui::Sense::click());
+                    let resp = ui.add(label).on_hover_text(&shown);
+                    if resp.double_clicked() {
+                        start_edit = Some((r, c));
+                    }
+                    if resp.clicked() {
+                        select = Some(r);
+                    }
+                }
+                ui.end_row();
+            }
+        });
+    });
+    if let Some(r) = select {
+        t.selected_row = Some(r);
+    }
+    if let Some((r, c)) = start_edit {
+        let cur = t.edits.get(&(r, c)).cloned().unwrap_or_else(|| all_rows[r][c].clone());
+        t.editing = Some((r, c, cur));
+    }
+    if let Some((r, c, v)) = commit {
+        let original = all_rows[r][c].clone();
+        if v == original && r < base_rows {
+            t.edits.remove(&(r, c));
+        } else {
+            t.edits.insert((r, c), v);
+        }
+        t.editing = None;
+    }
+    if cancel {
+        t.editing = None;
+    }
+    sort
 }
 
 /// Data grid with optional row numbers; NULL muted, long values truncated with a hover.

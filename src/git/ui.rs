@@ -35,8 +35,10 @@ enum Dialog {
 
 pub enum GitPick {
     Open(PathBuf),
-    /// Show the diff of this change in the editor area.
+    /// Show the diff of this change in the side-by-side viewer.
     Diff(Change),
+    /// Diff of one file inside a commit: (title, path, full diff).
+    CommitDiff(String, PathBuf, Vec<DiffLine>),
 }
 
 pub struct GitPanel {
@@ -279,7 +281,7 @@ impl GitPanel {
 
     pub fn diff_for(&self, change: &Change) -> Vec<DiffLine> {
         let staged_only = change.staged() && !change.unstaged();
-        cmd::diff_file(&self.root, change, staged_only).unwrap_or_default()
+        cmd::diff_file_full(&self.root, change, staged_only).unwrap_or_default()
     }
 
     // ---- Commit tool window (left) ------------------------------------------
@@ -324,147 +326,155 @@ impl GitPanel {
         ui.separator();
 
         let total = self.changes.len();
-        let msg_h = 150.0;
-        let list_h = (ui.available_height() - msg_h).max(80.0);
-        egui::ScrollArea::vertical()
-            .id_salt("commit-tree")
-            .max_height(list_h)
-            .auto_shrink([false, false])
+        // Message box docked at the bottom (drag the separator to resize), tree above.
+        let mut panel_action: Option<(String, Vec<Vec<String>>)> = None;
+        egui::Panel::bottom("commit-message-panel")
+            .default_size(150.0)
+            .resizable(true)
             .show(ui, |ui| {
-                if total == 0 {
-                    ui.label(RichText::new("No changes").color(muted));
+                let edit = ui.add(
+                    egui::TextEdit::multiline(&mut self.commit_msg)
+                        .id(egui::Id::new("commit-message"))
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("Commit Message"),
+                );
+                if self.focus_message {
+                    edit.request_focus();
+                    self.focus_message = false;
                 }
-                #[allow(clippy::type_complexity)]
-                let groups: [(&str, fn(&Change) -> bool); 3] = [
-                    ("Unmerged", |c| c.kind == Kind::Unmerged),
-                    ("Changes", |c| c.kind != Kind::Unmerged && c.kind != Kind::Untracked),
-                    ("Unversioned Files", |c| c.kind == Kind::Untracked),
-                ];
-                for (title, filter) in groups {
-                    let group: Vec<Change> = self.changes.iter().filter(|c| filter(c)).cloned().collect();
-                    if group.is_empty() {
-                        continue;
-                    }
-                    let mut on = group.iter().all(|c| self.checked.contains(&c.path));
-                    ui.horizontal(|ui| {
-                        if ui.checkbox(&mut on, "").changed() {
-                            for c in &group {
-                                if on {
-                                    self.checked.insert(c.path.clone());
-                                } else {
-                                    self.checked.remove(&c.path);
-                                }
-                            }
+                let checked: Vec<String> = self.checked.iter().cloned().collect();
+                let can = (!checked.is_empty() || self.amend) && !self.commit_msg.trim().is_empty() && !self.busy();
+                let mut do_commit = false;
+                let mut do_push = false;
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.amend, "Amend");
+                    ui.add_enabled_ui(can, |ui| {
+                        if ui
+                            .add(egui::Button::new(RichText::new("Commit").strong()).fill(theme.c(&theme.ui.accent).gamma_multiply(0.6)))
+                            .clicked()
+                        {
+                            do_commit = true;
                         }
-                        ui.label(RichText::new(title).strong());
-                        ui.label(RichText::new(format!("{} files", group.len())).color(theme.c(&theme.ui.warning)));
+                        if ui.button("Commit and Push").clicked() {
+                            do_commit = true;
+                            do_push = true;
+                        }
                     });
-                    for c in group {
-                        ui.horizontal(|ui| {
-                            ui.add_space(18.0);
-                            let mut on = self.checked.contains(&c.path);
-                            if ui.checkbox(&mut on, "").changed() {
-                                if on {
-                                    self.checked.insert(c.path.clone());
-                                } else {
-                                    self.checked.remove(&c.path);
-                                }
-                            }
-                            file_badge(ui, &c.path, theme);
-                            let (name, dir) = split_path(&c.path);
-                            let color = match c.label() {
-                                "new" => theme.c(&theme.ui.success),
-                                "deleted" => muted,
-                                "conflict" => theme.c(&theme.ui.error),
-                                _ => theme.c(&theme.ui.accent),
-                            };
-                            let r = ui.selectable_label(self.selected_change.as_deref() == Some(&c.path), RichText::new(name).color(color));
-                            ui.label(RichText::new(dir).color(theme.c(&theme.ui.warning)).small());
-                            if r.clicked() {
-                                self.selected_change = Some(c.path.clone());
-                                pick = Some(GitPick::Diff(c.clone()));
-                            }
-                            if r.double_clicked() {
-                                pick = Some(GitPick::Open(self.root.join(&c.path)));
-                            }
-                            r.context_menu(|ui| {
-                                if ui.button("Open in Editor").clicked() {
-                                    pick = Some(GitPick::Open(self.root.join(&c.path)));
-                                    ui.close();
-                                }
-                                if ui.button("Show Diff").clicked() {
-                                    pick = Some(GitPick::Diff(c.clone()));
-                                    ui.close();
-                                }
-                                if c.kind == Kind::Untracked && ui.button("Add to Git").clicked() {
-                                    action = Some(("add".into(), vec![Self::s(&["add", "--", &c.path])]));
-                                    ui.close();
-                                }
-                                if ui.button("Rollback…").clicked() {
-                                    confirm = Some(rollback_confirm(&c));
-                                    ui.close();
-                                }
-                            });
-                        });
-                    }
-                }
-            });
-
-        ui.separator();
-        let edit = ui.add(
-            egui::TextEdit::multiline(&mut self.commit_msg)
-                .id(egui::Id::new("commit-message"))
-                .desired_rows(3)
-                .desired_width(f32::INFINITY)
-                .hint_text("Commit Message"),
-        );
-        if self.focus_message {
-            edit.request_focus();
-            self.focus_message = false;
-        }
-        let checked: Vec<String> = self.checked.iter().cloned().collect();
-        let can = (!checked.is_empty() || self.amend) && !self.commit_msg.trim().is_empty() && !self.busy();
-        let mut do_commit = false;
-        let mut do_push = false;
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut self.amend, "Amend");
-            ui.add_enabled_ui(can, |ui| {
-                if ui
-                    .add(egui::Button::new(RichText::new("Commit").strong()).fill(theme.c(&theme.ui.accent).gamma_multiply(0.6)))
-                    .clicked()
+                });
+                if can
+                    && edit.has_focus()
+                    && ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Enter)))
                 {
                     do_commit = true;
                 }
-                if ui.button("Commit and Push").clicked() {
-                    do_commit = true;
-                    do_push = true;
+                if do_commit {
+                    let mut cmds = Vec::new();
+                    if !checked.is_empty() {
+                        let mut add = Self::s(&["add", "-A", "--"]);
+                        add.extend(checked.iter().cloned());
+                        cmds.push(add);
+                    }
+                    let mut c = Self::s(&["commit", "-m", self.commit_msg.trim()]);
+                    if self.amend {
+                        c.push("--amend".into());
+                    }
+                    cmds.push(c);
+                    if do_push {
+                        cmds.push(self.push_cmd(false));
+                    }
+                    panel_action = Some(("commit".into(), cmds));
+                    self.commit_msg.clear();
+                    self.amend = false;
                 }
             });
+        egui::CentralPanel::default().show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("commit-tree")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    if total == 0 {
+                        ui.label(RichText::new("No changes").color(muted));
+                    }
+                    #[allow(clippy::type_complexity)]
+                    let groups: [(&str, fn(&Change) -> bool); 3] = [
+                        ("Unmerged", |c| c.kind == Kind::Unmerged),
+                        ("Changes", |c| c.kind != Kind::Unmerged && c.kind != Kind::Untracked),
+                        ("Unversioned Files", |c| c.kind == Kind::Untracked),
+                    ];
+                    for (title, filter) in groups {
+                        let group: Vec<Change> = self.changes.iter().filter(|c| filter(c)).cloned().collect();
+                        if group.is_empty() {
+                            continue;
+                        }
+                        let mut on = group.iter().all(|c| self.checked.contains(&c.path));
+                        ui.horizontal(|ui| {
+                            if ui.checkbox(&mut on, "").changed() {
+                                for c in &group {
+                                    if on {
+                                        self.checked.insert(c.path.clone());
+                                    } else {
+                                        self.checked.remove(&c.path);
+                                    }
+                                }
+                            }
+                            ui.label(RichText::new(title).strong());
+                            ui.label(RichText::new(format!("{} files", group.len())).color(theme.c(&theme.ui.warning)));
+                        });
+                        for c in group {
+                            ui.horizontal(|ui| {
+                                ui.add_space(18.0);
+                                let mut on = self.checked.contains(&c.path);
+                                if ui.checkbox(&mut on, "").changed() {
+                                    if on {
+                                        self.checked.insert(c.path.clone());
+                                    } else {
+                                        self.checked.remove(&c.path);
+                                    }
+                                }
+                                file_badge(ui, &c.path, theme);
+                                let (name, dir) = split_path(&c.path);
+                                let color = match c.label() {
+                                    "new" => theme.c(&theme.ui.success),
+                                    "deleted" => muted,
+                                    "conflict" => theme.c(&theme.ui.error),
+                                    _ => theme.c(&theme.ui.accent),
+                                };
+                                let r =
+                                    ui.selectable_label(self.selected_change.as_deref() == Some(&c.path), RichText::new(name).color(color));
+                                ui.label(RichText::new(dir).color(theme.c(&theme.ui.warning)).small());
+                                if r.clicked() {
+                                    self.selected_change = Some(c.path.clone());
+                                    pick = Some(GitPick::Diff(c.clone()));
+                                }
+                                if r.double_clicked() {
+                                    pick = Some(GitPick::Open(self.root.join(&c.path)));
+                                }
+                                r.context_menu(|ui| {
+                                    if ui.button("Open in Editor").clicked() {
+                                        pick = Some(GitPick::Open(self.root.join(&c.path)));
+                                        ui.close();
+                                    }
+                                    if ui.button("Show Diff").clicked() {
+                                        pick = Some(GitPick::Diff(c.clone()));
+                                        ui.close();
+                                    }
+                                    if c.kind == Kind::Untracked && ui.button("Add to Git").clicked() {
+                                        action = Some(("add".into(), vec![Self::s(&["add", "--", &c.path])]));
+                                        ui.close();
+                                    }
+                                    if ui.button("Rollback…").clicked() {
+                                        confirm = Some(rollback_confirm(&c));
+                                        ui.close();
+                                    }
+                                });
+                            });
+                        }
+                    }
+                });
         });
-        if can
-            && edit.has_focus()
-            && ui.input_mut(|i| i.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Enter)))
-        {
-            do_commit = true;
-        }
-        if do_commit {
-            let mut cmds = Vec::new();
-            if !checked.is_empty() {
-                let mut add = Self::s(&["add", "-A", "--"]);
-                add.extend(checked.iter().cloned());
-                cmds.push(add);
-            }
-            let mut c = Self::s(&["commit", "-m", self.commit_msg.trim()]);
-            if self.amend {
-                c.push("--amend".into());
-            }
-            cmds.push(c);
-            if do_push {
-                cmds.push(self.push_cmd(false));
-            }
-            action = Some(("commit".into(), cmds));
-            self.commit_msg.clear();
-            self.amend = false;
+        if let Some(a) = panel_action {
+            action = Some(a);
         }
         if let Some((label, cmds)) = action {
             self.run(&label, cmds);
@@ -547,7 +557,7 @@ impl GitPanel {
                                 } else {
                                     c.subject.clone()
                                 };
-                                let r = ui.selectable_label(self.selected_commit == Some(i), RichText::new(subject));
+                                let r = ui.selectable_label(self.selected_commit == Some(i), RichText::new(subject).size(15.0));
                                 for rf in &c.refs {
                                     let col = if rf.starts_with("tag: ") {
                                         theme.c(&theme.ui.warning)
@@ -638,7 +648,8 @@ impl GitPanel {
                                     self.commit_diff = cmd::show_commit_diff(&self.root, &c.hash, path).unwrap_or_default();
                                 }
                                 if r.double_clicked() {
-                                    pick = Some(GitPick::Open(self.root.join(path)));
+                                    let full = cmd::show_commit_diff_full(&self.root, &c.hash, path).unwrap_or_default();
+                                    pick = Some(GitPick::CommitDiff(format!("{path} ({})", c.short), self.root.join(path), full));
                                 }
                             }
                         });

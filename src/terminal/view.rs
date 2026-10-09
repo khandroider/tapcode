@@ -85,7 +85,7 @@ impl TerminalPanel {
     }
 }
 
-fn render(ui: &mut egui::Ui, s: &mut Session, theme: &Theme, id: Id) {
+pub fn render(ui: &mut egui::Ui, s: &mut Session, theme: &Theme, id: Id) {
     let font = egui::TextStyle::Monospace.resolve(ui.style());
     let (row_h, char_w) = ui.ctx().fonts_mut(|f| (f.row_height(&font), f.glyph_width(&font, 'M')));
     let rect = ui.available_rect_before_wrap();

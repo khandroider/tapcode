@@ -1,8 +1,9 @@
 use crate::db::ui::{DbPanel, DbPick};
-use crate::docker::ui::{DockerPanel, DockerPick};
+use crate::docker::ui::DockerPanel;
 use crate::editor::buffer::Buffer;
 use crate::editor::view::{EditorView, editor_id};
 use crate::git::cmd as gitcmd;
+use crate::git::diff_win::DiffWindow;
 use crate::git::ui::{GitPanel, GitPick};
 use crate::index::Index;
 use crate::keymap::{self, Action, DoubleShift};
@@ -37,7 +38,6 @@ enum BottomTool {
 
 /// Non-file content shown in the editor area as an extra tab.
 enum Special {
-    Diff { title: String, lines: Vec<gitcmd::DiffLine> },
     Console(String),
     Table(String),
 }
@@ -68,6 +68,7 @@ pub struct App {
     special: Option<Special>,
     usages: Vec<Usage>,
     usages_title: String,
+    diff_window: Option<DiffWindow>,
     recent_popup: bool,
     status: String,
     double_shift: DoubleShift,
@@ -103,6 +104,7 @@ impl App {
             special: None,
             usages: Vec::new(),
             usages_title: String::new(),
+            diff_window: None,
             recent_popup: false,
             status: String::new(),
             double_shift: DoubleShift::default(),
@@ -166,6 +168,11 @@ impl App {
                         && let Some(g) = &mut app.git
                     {
                         g.open_push_dialog();
+                    }
+                    if q == "diff"
+                        && let Some(c) = app.git.as_ref().and_then(|g| g.changes.first().cloned())
+                    {
+                        app.show_diff(&c);
                     }
                 }
                 _ => {
@@ -307,10 +314,16 @@ impl App {
     fn show_diff(&mut self, change: &gitcmd::Change) {
         if let Some(g) = &self.git {
             let lines = g.diff_for(change);
-            self.special = Some(Special::Diff {
-                title: format!("{} (diff)", change.path.rsplit('/').next().unwrap_or(&change.path)),
-                lines,
-            });
+            self.diff_window = Some(DiffWindow::new(&change.path, &g.root.join(&change.path), &lines));
+        }
+    }
+
+    fn handle_git_pick(&mut self, pick: Option<GitPick>) {
+        match pick {
+            Some(GitPick::Open(p)) => self.open_file(&p),
+            Some(GitPick::Diff(c)) => self.show_diff(&c),
+            Some(GitPick::CommitDiff(title, path, lines)) => self.diff_window = Some(DiffWindow::new(&title, &path, &lines)),
+            None => {}
         }
     }
 
@@ -387,7 +400,10 @@ impl App {
             }
         }
         if goto_empty {
-            self.status = "Cannot find declaration to go to (the language server may still be indexing)".into();
+            crate::tlog!("goto: empty LSP result, falling back to the symbol index");
+            if !self.goto_by_index(ctx) {
+                self.status = "Cannot find declaration to go to (the language server may still be indexing)".into();
+            }
         }
         if let Some((p, line, col)) = goto {
             // Cmd+click on the declaration itself → show usages instead (JetBrains behaviour).
@@ -401,6 +417,35 @@ impl App {
         if let Some(locs) = refs {
             self.set_usages(locs);
         }
+    }
+
+    /// Fallback for Cmd+click / Cmd+B: look the word under the caret up in the symbol index.
+    fn goto_by_index(&mut self, ctx: &egui::Context) -> bool {
+        let Some(b) = self.tabs.get(self.active) else { return false };
+        let ws = b.word_start();
+        let we = b.word_right(ws);
+        let word = b.rope.slice(ws..we).to_string().trim().trim_start_matches('$').to_owned();
+        if word.is_empty() {
+            return false;
+        }
+        let Some(ix) = &self.index else { return false };
+        let mut hits = ix.symbols(&word, None, 50);
+        hits.retain(|h| h.name == word);
+        hits.sort_by_key(|h| {
+            if ["class", "interface", "trait", "enum", "type"].contains(&h.kind.as_str()) {
+                0
+            } else {
+                1
+            }
+        });
+        let Some(h) = hits.first() else {
+            crate::tlog!("goto: '{word}' not in the symbol index either");
+            return false;
+        };
+        let path = ix.abs(&h.path);
+        crate::tlog!("goto: index → {}:{}", path.display(), h.line + 1);
+        self.open_file_at(&path, h.line, h.col, ctx);
+        true
     }
 
     fn set_usages(&mut self, locs: Vec<(PathBuf, usize, usize)>) {
@@ -461,19 +506,27 @@ impl App {
             return;
         };
         let Some(b) = self.tabs.get_mut(self.active) else { return };
-        let wants = out.completion.is_some() || out.goto.is_some() || out.hover_at.is_some();
-        let Some(c) = self.lsp.client_for(b.lang, &root, &self.settings, ctx) else {
-            if out.goto.is_some() {
-                self.status = format!("No language server for {}", b.lang.name());
+        if out.goto.is_some() {
+            crate::tlog!("goto requested in {} (lsp status: {})", b.path.display(), self.lsp.status());
+        }
+        let lang = b.lang;
+        let path = b.path.clone();
+        let Some(c) = self.lsp.client_for(lang, &root, &self.settings, ctx) else {
+            if out.goto.is_some() && !self.goto_by_index(ctx) {
+                self.status = format!("No language server for {}", lang.name());
             }
             return;
         };
-        if !c.is_open(&b.path) {
-            if wants && out.goto.is_some() {
+        if !c.is_open(&path) {
+            if out.goto.is_some() && !self.goto_by_index(ctx) {
                 self.status = "Language server is still starting…".into();
             }
             return;
         }
+        let Some(b) = self.tabs.get_mut(self.active) else { return };
+        let Some(c) = self.lsp.client_for(b.lang, &root, &self.settings, ctx) else {
+            return;
+        };
         if b.lsp_version != b.version {
             c.did_change(&b.path, &b.text());
             b.lsp_version = b.version;
@@ -810,7 +863,6 @@ impl App {
                 }
                 if let Some(sp) = &self.special {
                     let title = match sp {
-                        Special::Diff { title, .. } => title.clone(),
                         Special::Console(n) => format!("console [{n}]"),
                         Special::Table(k) => self.db.table_title(k),
                     };
@@ -1011,11 +1063,7 @@ impl App {
                         ui.label(RichText::new("Not a git repository").color(theme.c(&theme.ui.fg_muted)));
                     }
                 }
-                match pick {
-                    Some(GitPick::Open(p)) => self.open_file(&p),
-                    Some(GitPick::Diff(c)) => self.show_diff(&c),
-                    None => {}
-                }
+                self.handle_git_pick(pick);
             }
             Some(LeftTool::Database) => match self.db.show_tree(ui, &theme) {
                 Some(DbPick::Console(key)) => self.special = Some(Special::Console(key)),
@@ -1036,11 +1084,7 @@ impl App {
                 } else {
                     ui.label(RichText::new("Not a git repository").color(theme.c(&theme.ui.fg_muted)));
                 }
-                match pick {
-                    Some(GitPick::Open(p)) => self.open_file(&p),
-                    Some(GitPick::Diff(c)) => self.show_diff(&c),
-                    None => {}
-                }
+                self.handle_git_pick(pick);
             }
             Some(BottomTool::Terminal) => {
                 if let Some(t) = &mut self.terminal {
@@ -1050,15 +1094,8 @@ impl App {
                 }
             }
             Some(BottomTool::Services) => {
-                let mut pick = None;
                 if let Some(d) = &mut self.docker {
-                    pick = d.show(ui, &theme);
-                }
-                if let Some(DockerPick::Terminal(cmd)) = pick
-                    && let Some(t) = &mut self.terminal
-                {
-                    self.bottom = Some(BottomTool::Terminal);
-                    t.spawn_cmd(ctx, Some(&cmd));
+                    d.show(ui, &theme);
                 }
             }
             Some(BottomTool::Usages) => {
@@ -1165,10 +1202,6 @@ impl App {
         let font = ui.style().text_styles[&TextStyle::Monospace].clone();
         let theme = self.theme.clone();
         match &self.special {
-            Some(Special::Diff { lines, .. }) => {
-                let lines = lines.clone();
-                crate::git::ui::diff_view(ui, &lines, &theme, "editor-diff");
-            }
             Some(Special::Console(name)) => {
                 let name = name.clone();
                 self.db.show_console(ui, &theme, font, &name);
@@ -1405,7 +1438,38 @@ impl eframe::App for App {
             }
         }
 
-        egui::Panel::top("menu").show(ui, |ui| self.menu_bar(ui));
+        egui::Panel::top("menu")
+            .frame(
+                egui::Frame::new()
+                    .fill(self.theme.c(&self.theme.ui.panel))
+                    .inner_margin(egui::Margin {
+                        left: 78,
+                        right: 8,
+                        top: 6,
+                        bottom: 6,
+                    }),
+            )
+            .show(ui, |ui| {
+                let bar = ui.interact(ui.max_rect(), egui::Id::new("titlebar-drag"), egui::Sense::click_and_drag());
+                if bar.drag_started() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+                if bar.double_clicked() {
+                    let max = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!max));
+                }
+                ui.horizontal(|ui| {
+                    self.menu_bar(ui);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let title = self
+                            .tree
+                            .as_ref()
+                            .and_then(|t| t.root.file_name().map(|n| n.to_string_lossy().into_owned()))
+                            .unwrap_or_else(|| "tapcode".into());
+                        ui.label(RichText::new(format!("tapcode — {title}")).color(self.theme.c(&self.theme.ui.fg_muted)));
+                    });
+                });
+            });
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
         egui::Panel::left("strip")
             .exact_size(40.0)
@@ -1439,5 +1503,11 @@ impl eframe::App for App {
 
         self.recent_files_popup(&ctx);
         self.settings_dialog(&ctx);
+        if let Some(w) = &mut self.diff_window {
+            w.show(&ctx, &theme);
+            if !w.open {
+                self.diff_window = None;
+            }
+        }
     }
 }

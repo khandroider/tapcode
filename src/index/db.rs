@@ -54,6 +54,20 @@ impl Db {
     pub fn open(root: &Path) -> Result<Self> {
         let dir = root.join(".tapcode");
         std::fs::create_dir_all(&dir)?;
+        // Keep the index out of `git status` without touching the project's .gitignore.
+        let exclude = root.join(".git/info/exclude");
+        if let Ok(cur) = std::fs::read_to_string(&exclude)
+            && !cur.lines().any(|l| l.trim() == ".tapcode/")
+        {
+            let _ = std::fs::write(
+                &exclude,
+                format!(
+                    "{}{}.tapcode/\n",
+                    cur,
+                    if cur.ends_with('\n') || cur.is_empty() { "" } else { "\n" }
+                ),
+            );
+        }
         let conn = Connection::open(dir.join("index.db"))?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         // Two connections (UI + indexer) run the schema at startup; `PRAGMA journal_mode` ignores the

@@ -83,6 +83,10 @@ impl Lsp {
                     self.clients.insert(key, c);
                 }
                 Err(e) => {
+                    crate::tlog!(
+                        "lsp[{key}] failed to start: {e:#} (cmd {cmd:?}, PATH={:?})",
+                        std::env::var("PATH").ok()
+                    );
                     self.failed.insert(key, format!("{e:#}"));
                     return None;
                 }

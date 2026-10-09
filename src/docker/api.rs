@@ -2,8 +2,9 @@
 
 use bollard::Docker;
 use bollard::query_parameters::{
-    CreateImageOptionsBuilder, ListContainersOptionsBuilder, ListImagesOptionsBuilder, LogsOptionsBuilder, RemoveContainerOptionsBuilder,
-    RemoveImageOptionsBuilder, RestartContainerOptionsBuilder, StartContainerOptions, StopContainerOptionsBuilder,
+    CreateImageOptionsBuilder, InspectContainerOptions, ListContainersOptionsBuilder, ListImagesOptionsBuilder, ListNetworksOptions,
+    ListVolumesOptions, LogsOptionsBuilder, RemoveContainerOptionsBuilder, RemoveImageOptionsBuilder, RestartContainerOptionsBuilder,
+    StartContainerOptions, StopContainerOptionsBuilder,
 };
 use futures_util::StreamExt;
 use std::path::{Path, PathBuf};
@@ -18,6 +19,11 @@ pub struct ContainerRow {
     pub state: String,
     pub status: String,
     pub ports: String,
+    pub command: String,
+    pub created: i64,
+    pub compose_project: Option<String>,
+    pub compose_service: Option<String>,
+    pub compose_files: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -26,6 +32,20 @@ pub struct ImageRow {
     pub tags: String,
     pub size: i64,
     pub created: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct NetworkRow {
+    pub name: String,
+    pub driver: String,
+    pub scope: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct VolumeRow {
+    pub name: String,
+    pub driver: String,
+    pub mountpoint: String,
 }
 
 pub enum Cmd {
@@ -38,6 +58,7 @@ pub enum Cmd {
     Pull(String),
     /// Stream logs of a container (tail 500, follow) until another Logs request replaces it.
     Logs(String),
+    Inspect(String),
     Compose {
         file: PathBuf,
         args: Vec<String>,
@@ -47,8 +68,12 @@ pub enum Cmd {
 pub enum Event {
     Containers(Vec<ContainerRow>),
     Images(Vec<ImageRow>),
+    Networks(Vec<NetworkRow>),
+    Volumes(Vec<VolumeRow>),
     Log(String),
     LogsCleared,
+    /// Inspect result: (container id, key/value properties).
+    Inspect(String, Vec<(String, String)>),
     Console(String),
     Error(String),
     Done,
@@ -98,7 +123,6 @@ async fn run(root: PathBuf, rx: Receiver<Cmd>, tx: Sender<Event>, ctx: egui::Con
         return;
     }
     let logs_task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>> = Arc::new(Mutex::new(None));
-    // Commands arrive on a std channel; poll it without blocking the runtime.
     loop {
         let cmd = match rx.try_recv() {
             Ok(c) => c,
@@ -130,10 +154,47 @@ async fn run(root: PathBuf, rx: Receiver<Cmd>, tx: Sender<Event>, ctx: egui::Con
                 .remove_image(&id, Some(RemoveImageOptionsBuilder::default().force(false).build()), None)
                 .await
                 .map(|_| ()),
+            Cmd::Inspect(id) => match docker.inspect_container(&id, None::<InspectContainerOptions>).await {
+                Ok(i) => {
+                    let mut props = Vec::new();
+                    props.push(("Id".into(), i.id.clone().unwrap_or_default()));
+                    if let Some(c) = &i.config {
+                        props.push(("Working dir".into(), c.working_dir.clone().unwrap_or_default()));
+                        for e in c.env.clone().unwrap_or_default() {
+                            props.push(("Env".into(), e));
+                        }
+                    }
+                    if let Some(s) = &i.state {
+                        props.push(("Started".into(), s.started_at.clone().unwrap_or_default()));
+                    }
+                    for m in i.mounts.clone().unwrap_or_default() {
+                        props.push((
+                            "Mount".into(),
+                            format!("{} → {}", m.source.unwrap_or_default(), m.destination.unwrap_or_default()),
+                        ));
+                    }
+                    if let Some(hc) = &i.host_config
+                        && let Some(pb) = &hc.port_bindings
+                    {
+                        for (k, v) in pb {
+                            let hosts: Vec<String> = v
+                                .clone()
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|b| b.host_port.unwrap_or_default())
+                                .collect();
+                            props.push(("Port".into(), format!("{} → {k}", hosts.join(","))));
+                        }
+                    }
+                    let _ = tx.send(Event::Inspect(id, props));
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            },
             Cmd::Pull(name) => {
                 let (image, tag) = name
                     .rsplit_once(':')
-                    .filter(|(i, _)| !i.contains('/') || !i.ends_with('/'))
+                    .filter(|(i, _)| !i.ends_with('/'))
                     .unwrap_or((name.as_str(), "latest"));
                 let opts = CreateImageOptionsBuilder::default().from_image(image).tag(tag).build();
                 let mut stream = docker.create_image(Some(opts), None, None);
@@ -253,6 +314,7 @@ async fn refresh(docker: &Docker, tx: &Sender<Event>) -> Result<(), bollard::err
                 .collect();
             ports.sort();
             ports.dedup();
+            let labels = c.labels.unwrap_or_default();
             ContainerRow {
                 id: c.id.unwrap_or_default(),
                 name: c
@@ -265,6 +327,11 @@ async fn refresh(docker: &Docker, tx: &Sender<Event>) -> Result<(), bollard::err
                 state: c.state.map(|s| format!("{s:?}").to_lowercase()).unwrap_or_default(),
                 status: c.status.unwrap_or_default(),
                 ports: ports.join(", "),
+                command: c.command.unwrap_or_default(),
+                created: c.created.unwrap_or_default(),
+                compose_project: labels.get("com.docker.compose.project").cloned(),
+                compose_service: labels.get("com.docker.compose.service").cloned(),
+                compose_files: labels.get("com.docker.compose.project.config_files").cloned(),
             }
         })
         .collect();
@@ -286,10 +353,34 @@ async fn refresh(docker: &Docker, tx: &Sender<Event>) -> Result<(), bollard::err
         })
         .collect();
     let _ = tx.send(Event::Images(rows));
+    let networks = docker.list_networks(None::<ListNetworksOptions>).await?;
+    let _ = tx.send(Event::Networks(
+        networks
+            .into_iter()
+            .map(|n| NetworkRow {
+                name: n.name.unwrap_or_default(),
+                driver: n.driver.unwrap_or_default(),
+                scope: n.scope.unwrap_or_default(),
+            })
+            .collect(),
+    ));
+    let volumes = docker.list_volumes(None::<ListVolumesOptions>).await?;
+    let _ = tx.send(Event::Volumes(
+        volumes
+            .volumes
+            .unwrap_or_default()
+            .into_iter()
+            .map(|v| VolumeRow {
+                name: v.name,
+                driver: v.driver,
+                mountpoint: v.mountpoint,
+            })
+            .collect(),
+    ));
     Ok(())
 }
 
-/// Compose files in the project root (JetBrains lists these under Services).
+/// Compose files in the project root (and dev/, docker/).
 pub fn compose_files(root: &Path) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = std::fs::read_dir(root)
         .map(|rd| {

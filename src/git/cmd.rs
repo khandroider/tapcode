@@ -313,6 +313,26 @@ pub fn parse_diff(s: &str) -> Vec<DiffLine> {
     out
 }
 
+/// Whole-file diff (every line as context) for the side-by-side viewer.
+pub fn diff_file_full(root: &Path, change: &Change, staged: bool) -> Result<Vec<DiffLine>> {
+    if change.kind == Kind::Untracked {
+        return diff_file(root, change, staged);
+    }
+    let mut args = vec!["diff", "--no-color", "--no-ext-diff", "-U1000000"];
+    if staged {
+        args.push("--cached");
+    }
+    args.extend(["--", change.path.as_str()]);
+    Ok(parse_diff(&git(root, &args)?))
+}
+
+pub fn show_commit_diff_full(root: &Path, hash: &str, path: &str) -> Result<Vec<DiffLine>> {
+    Ok(parse_diff(&git(
+        root,
+        &["show", "--no-color", "--format=", "-U1000000", hash, "--", path],
+    )?))
+}
+
 pub fn diff_file(root: &Path, change: &Change, staged: bool) -> Result<Vec<DiffLine>> {
     if change.kind == Kind::Untracked {
         let text = std::fs::read_to_string(root.join(&change.path)).unwrap_or_default();

@@ -197,6 +197,11 @@ impl Client {
     fn request(&mut self, method: &str, params: Value, pending: Pending) {
         self.next_id += 1;
         let id = self.next_id;
+        crate::tlog!(
+            "lsp[{}] → #{id} {method} {}",
+            self.name,
+            params.get("position").map(|p| p.to_string()).unwrap_or_default()
+        );
         self.pending.insert(id, pending);
         self.send(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
     }
@@ -210,6 +215,7 @@ impl Client {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 Incoming::Exited => {
+                    crate::tlog!("lsp[{}] exited", self.name);
                     self.dead = true;
                     self.log.push(format!("{} exited", self.name));
                 }
@@ -247,6 +253,14 @@ impl Client {
                     }
                 }
                 Incoming::Response { id, result, error } => {
+                    crate::tlog!(
+                        "lsp[{}] ← #{id} {}",
+                        self.name,
+                        error.as_ref().map(|e| format!("error {e}")).unwrap_or_else(|| {
+                            let s = result.to_string();
+                            if s.len() > 300 { format!("{}…", &s[..300]) } else { s }
+                        })
+                    );
                     let Some(p) = self.pending.remove(&id) else { continue };
                     if let Some(e) = error {
                         self.log.push(format!("{}: {e}", self.name));
