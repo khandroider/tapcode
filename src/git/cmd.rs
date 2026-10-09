@@ -408,7 +408,7 @@ pub fn blame(root: &Path, path: &Path) -> Vec<String> {
     out
 }
 
-fn fmt_date(unix: i64) -> String {
+pub fn fmt_date(unix: i64) -> String {
     // Days since epoch → civil date (Howard Hinnant's algorithm); avoids a chrono dependency.
     let z = unix.div_euclid(86_400) + 719_468;
     let era = z.div_euclid(146_097);

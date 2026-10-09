@@ -2,6 +2,7 @@
 
 mod app;
 mod db;
+mod docker;
 mod editor;
 mod git;
 mod index;

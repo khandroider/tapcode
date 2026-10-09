@@ -1,4 +1,5 @@
 use crate::db::ui::DbPanel;
+use crate::docker::ui::{DockerPanel, DockerPick};
 use crate::editor::buffer::Buffer;
 use crate::editor::view::{EditorView, editor_id};
 use crate::git::cmd as gitcmd;
@@ -28,6 +29,8 @@ pub struct App {
     show_terminal: bool,
     db: DbPanel,
     show_db: bool,
+    docker: Option<DockerPanel>,
+    show_docker: bool,
     search: SearchUi,
     tabs: Vec<Buffer>,
     active: usize,
@@ -60,6 +63,8 @@ impl App {
             show_terminal: false,
             db,
             show_db: false,
+            docker: None,
+            show_docker: false,
             search: SearchUi::default(),
             tabs: Vec::new(),
             active: 0,
@@ -89,6 +94,10 @@ impl App {
         {
             if mode == "terminal" {
                 app.show_terminal = true;
+                return app;
+            }
+            if mode == "docker" {
+                app.show_docker = true;
                 return app;
             }
             if mode == "db" {
@@ -137,6 +146,7 @@ impl App {
         self.tree = Some(Tree::new(path.clone()));
         self.git = gitcmd::toplevel(&path).map(GitPanel::new);
         self.terminal = Some(TerminalPanel::new(path.clone()));
+        self.docker = Some(DockerPanel::new(path.clone()));
         self.index = Some(Index::new(path));
     }
 
@@ -388,6 +398,7 @@ impl App {
             Action::ToggleGit => self.show_git = !self.show_git,
             Action::ToggleTerminal => self.show_terminal = !self.show_terminal,
             Action::ToggleDatabase => self.show_db = !self.show_db,
+            Action::ToggleDocker => self.show_docker = !self.show_docker,
             Action::Commit => {
                 if let Some(g) = &mut self.git {
                     self.show_git = true;
@@ -492,6 +503,7 @@ impl App {
                 ui.checkbox(&mut self.show_git, "Git panel");
                 ui.checkbox(&mut self.show_terminal, "Terminal");
                 ui.checkbox(&mut self.show_db, "Database");
+                ui.checkbox(&mut self.show_docker, "Services (Docker)");
                 ui.separator();
                 ui.label("Theme");
                 for n in theme::names() {
@@ -652,6 +664,9 @@ impl eframe::App for App {
         }
         self.lsp_tick(&ctx);
         self.db.tick(&ctx);
+        if let Some(d) = &mut self.docker {
+            d.tick(&ctx, self.show_docker);
+        }
         if self.db.settings_dirty {
             self.db.settings_dirty = false;
             self.settings.connections = self.db.connections.clone();
@@ -736,6 +751,21 @@ impl eframe::App for App {
             }
         }
 
+        if self.show_docker
+            && let Some(d) = &mut self.docker
+        {
+            let theme = self.theme.clone();
+            let mut pick = None;
+            egui::Panel::bottom("docker")
+                .default_size(320.0)
+                .show(ui, |ui| pick = d.show(ui, &theme));
+            if let Some(DockerPick::Terminal(cmd)) = pick
+                && let Some(t) = &mut self.terminal
+            {
+                self.show_terminal = true;
+                t.spawn_cmd(&ctx, Some(&cmd));
+            }
+        }
         if self.show_db {
             let theme = self.theme.clone();
             let font = ui.style().text_styles[&TextStyle::Monospace].clone();

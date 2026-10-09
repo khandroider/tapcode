@@ -50,7 +50,7 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn spawn(cwd: &Path, dims: Dims, ctx: egui::Context) -> Result<Self> {
+    pub fn spawn(cwd: &Path, dims: Dims, ctx: egui::Context, command: Option<&[String]>) -> Result<Self> {
         let pty = native_pty_system();
         let pair = pty.openpty(PtySize {
             rows: dims.rows as u16,
@@ -59,8 +59,21 @@ impl Session {
             pixel_height: 0,
         })?;
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-        let mut cmd = CommandBuilder::new(&shell);
-        cmd.arg("-l");
+        let (mut cmd, title) = match command {
+            Some([prog, args @ ..]) => {
+                let mut c = CommandBuilder::new(prog);
+                c.args(args);
+                (
+                    c,
+                    args.iter().find(|a| !a.starts_with('-')).cloned().unwrap_or_else(|| prog.clone()),
+                )
+            }
+            _ => {
+                let mut c = CommandBuilder::new(&shell);
+                c.arg("-l");
+                (c, shell.rsplit('/').next().unwrap_or("shell").to_owned())
+            }
+        };
         cmd.cwd(cwd);
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
@@ -95,7 +108,7 @@ impl Session {
             child,
             bytes_rx,
             events_rx,
-            title: shell.rsplit('/').next().unwrap_or("shell").to_owned(),
+            title,
             dims,
             exited: false,
         })

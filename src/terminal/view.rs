@@ -29,7 +29,12 @@ impl TerminalPanel {
     }
 
     fn spawn(&mut self, ctx: &egui::Context) {
-        match Session::spawn(&self.cwd, Dims { cols: 100, rows: 24 }, ctx.clone()) {
+        self.spawn_cmd(ctx, None);
+    }
+
+    /// Open a tab running `command` (e.g. `docker exec -it <id> /bin/sh`); `None` = login shell.
+    pub fn spawn_cmd(&mut self, ctx: &egui::Context, command: Option<&[String]>) {
+        match Session::spawn(&self.cwd, Dims { cols: 100, rows: 24 }, ctx.clone(), command) {
             Ok(s) => {
                 self.sessions.push(s);
                 self.active = self.sessions.len() - 1;
