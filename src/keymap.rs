@@ -26,6 +26,7 @@ pub enum Action {
     Commit,
     Push,
     Update,
+    Annotate,
 }
 
 const CMD: Modifiers = Modifiers::COMMAND;
@@ -132,13 +133,15 @@ pub fn label(a: Action) -> &'static str {
         Action::Commit => "Commit…",
         Action::Push => "Push…",
         Action::Update => "Update Project",
+        Action::Annotate => "Annotate with Git Blame",
     }
 }
 
-pub fn shortcut_text(ctx: &egui::Context, a: Action) -> String {
+pub fn shortcut_text(_ctx: &egui::Context, a: Action) -> String {
+    // Text names instead of ⌘⇧ symbols: egui's bundled fonts lack some of those glyphs.
     BINDINGS
         .iter()
         .find(|(_, _, x)| *x == a)
-        .map(|(m, k, _)| ctx.format_shortcut(&KeyboardShortcut::new(*m, *k)))
+        .map(|(m, k, _)| KeyboardShortcut::new(*m, *k).format(&egui::ModifierNames::NAMES, true))
         .unwrap_or_default()
 }

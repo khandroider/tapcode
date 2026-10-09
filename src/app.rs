@@ -1,5 +1,7 @@
 use crate::editor::buffer::Buffer;
 use crate::editor::view::{EditorView, editor_id};
+use crate::git::cmd as gitcmd;
+use crate::git::ui::{GitPanel, GitPick};
 use crate::index::Index;
 use crate::keymap::{self, Action, DoubleShift};
 use crate::search_ui::{Mode, Pick, SearchUi};
@@ -16,6 +18,8 @@ pub struct App {
     pub settings: Settings,
     tree: Option<Tree>,
     index: Option<Index>,
+    git: Option<GitPanel>,
+    show_git: bool,
     search: SearchUi,
     tabs: Vec<Buffer>,
     active: usize,
@@ -36,6 +40,8 @@ impl App {
             settings,
             tree: None,
             index: None,
+            git: None,
+            show_git: false,
             search: SearchUi::default(),
             tabs: Vec::new(),
             active: 0,
@@ -56,10 +62,19 @@ impl App {
         for f in files {
             app.open_file(f);
         }
-        // CODE_EDITOR_DEMO="classes:Controller" opens the search popup at startup (screenshots / smoke checks).
+        // CODE_EDITOR_DEMO="classes:Controller" opens the search popup at startup; "git:" opens the Git panel.
         if let Ok(demo) = std::env::var("CODE_EDITOR_DEMO")
             && let Some((mode, q)) = demo.split_once(':')
         {
+            if mode == "git" {
+                app.show_git = true;
+                if q == "commit"
+                    && let Some(g) = &mut app.git
+                {
+                    g.open_commit_dialog();
+                }
+                return app;
+            }
             let mode = match mode {
                 "files" => Mode::Files,
                 "classes" => Mode::Classes,
@@ -80,6 +95,7 @@ impl App {
         Settings::touch_recent(&mut self.settings.recent_projects, &path, 10);
         self.settings.save();
         self.tree = Some(Tree::new(path.clone()));
+        self.git = gitcmd::toplevel(&path).map(GitPanel::new);
         self.index = Some(Index::new(path));
     }
 
@@ -220,6 +236,32 @@ impl App {
             Action::FindAction => self.search.open(Mode::Actions, false, None),
             Action::FindInPath => self.search.open(Mode::Text, false, self.selected_word()),
             Action::ReplaceInPath => self.search.open(Mode::Text, true, self.selected_word()),
+            Action::ToggleGit => self.show_git = !self.show_git,
+            Action::Commit => {
+                if let Some(g) = &mut self.git {
+                    self.show_git = true;
+                    g.open_commit_dialog();
+                }
+            }
+            Action::Push => {
+                if let Some(g) = &mut self.git {
+                    self.show_git = true;
+                    g.push();
+                }
+            }
+            Action::Update => {
+                if let Some(g) = &mut self.git {
+                    self.show_git = true;
+                    g.pull();
+                }
+            }
+            Action::Annotate => {
+                if let (Some(g), Some(b)) = (&mut self.git, self.tabs.get(self.active))
+                    && !g.annotate.remove(&b.path)
+                {
+                    g.annotate.insert(b.path.clone());
+                }
+            }
             other => self.status = format!("{} — coming in a later phase", keymap::label(other)),
         }
         let _ = ctx;
@@ -270,7 +312,7 @@ impl App {
                     Action::FindInPath,
                 ] {
                     let sc = if a == Action::SearchEverywhere {
-                        "⇧ ⇧".to_owned()
+                        "Shift Shift".to_owned()
                     } else {
                         keymap::shortcut_text(&ctx, a)
                     };
@@ -280,8 +322,23 @@ impl App {
                     }
                 }
             });
+            ui.menu_button("Git", |ui| {
+                for a in [Action::Commit, Action::Push, Action::Update, Action::Annotate, Action::ToggleGit] {
+                    if ui
+                        .add_enabled(
+                            self.git.is_some(),
+                            egui::Button::new(keymap::label(a)).shortcut_text(keymap::shortcut_text(&ctx, a)),
+                        )
+                        .clicked()
+                    {
+                        actions.push(a);
+                        ui.close();
+                    }
+                }
+            });
             ui.menu_button("View", |ui| {
                 ui.checkbox(&mut self.show_project, "Project panel");
+                ui.checkbox(&mut self.show_git, "Git panel");
                 ui.separator();
                 ui.label("Theme");
                 for n in theme::names() {
@@ -426,6 +483,14 @@ impl eframe::App for App {
                 t.invalidate();
             }
             self.reload_changed(&changed);
+            if let Some(g) = &mut self.git {
+                g.dirty = true;
+            }
+        }
+        if let Some(g) = &mut self.git {
+            g.tick(&ctx);
+            let theme = self.theme.clone();
+            g.dialogs(&ctx, &theme);
         }
         if self.search.open {
             let theme = self.theme.clone();
@@ -455,6 +520,12 @@ impl eframe::App for App {
                     if let Some(ix) = &self.index {
                         ui.separator();
                         ui.label(&ix.status);
+                    }
+                    if let Some(g) = &self.git {
+                        ui.separator();
+                        if ui.selectable_label(self.show_git, format!("git: {}", g.status_text())).clicked() {
+                            self.show_git = !self.show_git;
+                        }
                     }
                 });
             });
@@ -486,14 +557,29 @@ impl eframe::App for App {
             }
         }
 
+        if self.show_git
+            && let Some(g) = &mut self.git
+        {
+            let theme = self.theme.clone();
+            let mut pick = None;
+            egui::Panel::bottom("git").default_size(320.0).show(ui, |ui| {
+                pick = g.show(ui, &theme);
+            });
+            if let Some(GitPick::Open(p)) = pick {
+                self.open_file(&p);
+            }
+        }
+
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(self.theme.c(&self.theme.ui.bg)))
             .show(ui, |ui| {
                 if self.tabs.is_empty() {
                     ui.centered_and_justified(|ui| {
                         ui.label(
-                            egui::RichText::new("Open a file from the project tree  ·  ⌘⇧O go to file  ·  ⇧⇧ search everywhere")
-                                .color(self.theme.c(&self.theme.ui.fg_muted)),
+                            egui::RichText::new(
+                                "Open a file from the project tree  ·  Cmd+Shift+O go to file  ·  Shift Shift search everywhere",
+                            )
+                            .color(self.theme.c(&self.theme.ui.fg_muted)),
                         );
                     });
                     return;
@@ -501,10 +587,16 @@ impl eframe::App for App {
                 egui::Panel::top("tabs").show(ui, |ui| self.tabs_bar(ui));
                 let font = ui.style().text_styles[&TextStyle::Monospace].clone();
                 if let Some(buf) = self.tabs.get_mut(self.active) {
+                    let (marks, blame): (Vec<(usize, gitcmd::Mark)>, Option<Vec<String>>) = match &mut self.git {
+                        Some(g) => (g.marks_for(&buf.path).to_vec(), g.blame_for(&buf.path).map(|b| b.to_vec())),
+                        None => (Vec::new(), None),
+                    };
                     EditorView {
                         buf,
                         theme: &self.theme,
                         font,
+                        marks: &marks,
+                        blame: blame.as_deref(),
                     }
                     .show(ui);
                 }

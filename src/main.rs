@@ -2,6 +2,7 @@
 
 mod app;
 mod editor;
+mod git;
 mod index;
 mod keymap;
 mod search_ui;

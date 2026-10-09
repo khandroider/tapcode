@@ -2,6 +2,7 @@
 
 use super::buffer::Buffer;
 use super::highlight::NAMES;
+use crate::git::cmd::Mark;
 use crate::theme::Theme;
 use egui::text::{CCursor, LayoutJob};
 use egui::{Color32, Event, EventFilter, FontId, Id, Key, Modifiers, Rect, Sense, Stroke, TextFormat, Vec2, pos2, vec2};
@@ -13,6 +14,10 @@ pub struct EditorView<'a> {
     pub buf: &'a mut Buffer,
     pub theme: &'a Theme,
     pub font: FontId,
+    /// Git change marks (0-based line → kind) painted in the gutter.
+    pub marks: &'a [(usize, Mark)],
+    /// Per-line blame text when annotation is on.
+    pub blame: Option<&'a [String]>,
 }
 
 pub fn editor_id(path: &std::path::Path) -> Id {
@@ -21,7 +26,13 @@ pub fn editor_id(path: &std::path::Path) -> Id {
 
 impl EditorView<'_> {
     pub fn show(self, ui: &mut egui::Ui) {
-        let EditorView { buf, theme, font } = self;
+        let EditorView {
+            buf,
+            theme,
+            font,
+            marks,
+            blame,
+        } = self;
         let id = editor_id(&buf.path);
         let ctx = ui.ctx().clone();
 
@@ -31,7 +42,10 @@ impl EditorView<'_> {
 
         let (row_h, char_w) = ctx.fonts_mut(|f| (f.row_height(&font), f.glyph_width(&font, 'M')));
         let n_lines = buf.rope.len_lines();
-        let gutter_w = (n_lines.max(1).to_string().len() as f32 + 1.0) * char_w + GUTTER_PAD;
+        let blame_w = blame
+            .map(|b| b.iter().map(|s| s.chars().count()).max().unwrap_or(0) as f32 * char_w + GUTTER_PAD)
+            .unwrap_or(0.0);
+        let gutter_w = (n_lines.max(1).to_string().len() as f32 + 1.0) * char_w + GUTTER_PAD + blame_w;
 
         let full = ui.available_rect_before_wrap();
         let gutter_rect = Rect::from_min_size(full.min, vec2(gutter_w, full.height()));
@@ -263,9 +277,35 @@ impl EditorView<'_> {
             Stroke::new(1.0, theme.c(&theme.ui.border)),
         );
         let muted = theme.c(&theme.ui.fg_muted);
+        let mark_color = |m: Mark| match m {
+            Mark::Added => theme.c(&theme.ui.success),
+            Mark::Modified => theme.c(&theme.ui.accent),
+            Mark::Deleted => theme.c(&theme.ui.error),
+        };
         for line in first..last {
             let y = gutter_rect.min.y + line as f32 * row_h - offset_y;
             let color = if line == cursor_line { fg } else { muted };
+            if let Some(b) = blame.and_then(|b| b.get(line)) {
+                gp.text(
+                    pos2(gutter_rect.min.x + 4.0, y + row_h * 0.5),
+                    egui::Align2::LEFT_CENTER,
+                    b,
+                    font.clone(),
+                    muted,
+                );
+            }
+            for (_, m) in marks.iter().filter(|(l, _)| *l == line) {
+                let x = gutter_rect.max.x - 3.0;
+                if *m == Mark::Deleted {
+                    gp.add(egui::Shape::convex_polygon(
+                        vec![pos2(x, y), pos2(x + 6.0, y - 4.0), pos2(x + 6.0, y + 4.0)],
+                        mark_color(*m),
+                        Stroke::NONE,
+                    ));
+                } else {
+                    gp.rect_filled(Rect::from_min_max(pos2(x, y), pos2(x + 3.0, y + row_h)), 0.0, mark_color(*m));
+                }
+            }
             gp.text(
                 pos2(gutter_rect.max.x - GUTTER_PAD * 0.5, y + row_h * 0.5),
                 egui::Align2::RIGHT_CENTER,
