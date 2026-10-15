@@ -24,7 +24,6 @@ Opensource IDE на Rust для PHP / JavaScript / TypeScript в духе JetBra
 ![completion](docs/completion.png)
 ![git](docs/git.png)
 ![database](docs/database-readonly.png)
-![docker](docs/docker.png)
 
 ## Сборка и запуск
 
@@ -53,6 +52,8 @@ docker compose -f dev/docker-compose.yml up -d
 `~/Library/Application Support/tapcode/settings.toml` — тема, размер шрифта, автосохранение, команды LSP-серверов, список соединений с БД (без паролей). Редактируется через Cmd+,.
 
 ## Переменные для скриншотов и smoke-проверок
+
+Скриншоты для README и сайта снимаются с демо-проекта, не с рабочих: `sh dev/demo.sh /tmp/acme-shop && sh dev/screenshots.sh /tmp/acme-shop out/`.
 
 - `TAPCODE_SCREENSHOT=out.png` — снять окно через `TAPCODE_SCREENSHOT_DELAY` секунд (по умолчанию 1.5) и выйти.
 - `TAPCODE_DEMO=…` — открыть при старте: `all:<query>` / `files:` / `classes:` / `text:` (поиск), `git:` / `git:commit`, `terminal:`, `docker:`, `lsp:<line>:<col>` (автодополнение), `db:<name>:<password>:<statement>`.
