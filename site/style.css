@@ -88,3 +88,14 @@ figcaption { padding: .5rem .8rem; color: var(--muted); font-size: .85rem; }
 .shots { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
 
 footer { padding: 2rem 16px; color: var(--muted); font-size: .9rem; text-align: center; border-top: 1px solid var(--border); }
+
+/* lightbox */
+.zoom { display: block; cursor: zoom-in; }
+#lightbox { border: 0; padding: 0; background: transparent; max-width: 100vw; max-height: 100vh; }
+#lightbox::backdrop { background: rgba(0, 0, 0, .85); }
+#lightbox img { max-width: 95vw; max-height: 90vh; width: auto; height: auto; border-radius: 8px; cursor: zoom-out; }
+#lightbox button {
+  position: fixed; top: 12px; right: 16px;
+  background: var(--panel); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 8px; font: inherit; font-size: 1.4rem; line-height: 1; padding: .3rem .7rem; cursor: pointer;
+}

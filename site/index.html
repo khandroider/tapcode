@@ -31,7 +31,7 @@
       <a class="btn btn-ghost" href="#build">Build from source</a>
     </p>
     <figure class="shot shot-big">
-      <img src="img/screenshot.png" alt="tapcode editor window with a PHP file, file tree and bottom panel" width="1400" height="900" loading="eager">
+      <a class="zoom" href="img/screenshot.png"><img src="img/screenshot.png" alt="tapcode editor window with a PHP file, file tree and bottom panel" width="1400" height="900" loading="eager"></a>
     </figure>
   </section>
 
@@ -52,11 +52,11 @@
   <section id="screens" class="screens">
     <h2>Screens</h2>
     <ul class="shots">
-      <li><figure class="shot"><img src="img/search.png" alt="Search Everywhere popup" width="1400" height="900" loading="lazy"><figcaption>Search Everywhere</figcaption></figure></li>
-      <li><figure class="shot"><img src="img/completion.png" alt="Code completion from the language server" width="1400" height="900" loading="lazy"><figcaption>Completion</figcaption></figure></li>
-      <li><figure class="shot"><img src="img/git.png" alt="Git commit window with changes and diff" width="1400" height="900" loading="lazy"><figcaption>Git</figcaption></figure></li>
-      <li><figure class="shot"><img src="img/database-readonly.jpg" alt="Database panel asking to confirm a write query" width="1400" height="900" loading="lazy"><figcaption>Database, read-only guard</figcaption></figure></li>
-      <li><figure class="shot"><img src="img/terminal.png" alt="Built-in terminal" width="1400" height="900" loading="lazy"><figcaption>Terminal</figcaption></figure></li>
+      <li><figure class="shot"><a class="zoom" href="img/search.png"><img src="img/search.png" alt="Search Everywhere popup" width="1400" height="900" loading="lazy"></a><figcaption>Search Everywhere</figcaption></figure></li>
+      <li><figure class="shot"><a class="zoom" href="img/completion.png"><img src="img/completion.png" alt="Code completion from the language server" width="1400" height="900" loading="lazy"></a><figcaption>Completion</figcaption></figure></li>
+      <li><figure class="shot"><a class="zoom" href="img/git.png"><img src="img/git.png" alt="Git commit window with changes and diff" width="1400" height="900" loading="lazy"></a><figcaption>Git</figcaption></figure></li>
+      <li><figure class="shot"><a class="zoom" href="img/database-readonly.jpg"><img src="img/database-readonly.jpg" alt="Database panel asking to confirm a write query" width="1400" height="900" loading="lazy"></a><figcaption>Database, read-only guard</figcaption></figure></li>
+      <li><figure class="shot"><a class="zoom" href="img/terminal.png"><img src="img/terminal.png" alt="Built-in terminal" width="1400" height="900" loading="lazy"></a><figcaption>Terminal</figcaption></figure></li>
     </ul>
   </section>
 
@@ -74,6 +74,23 @@ cargo run --release -- ~/path/to/project</code></pre>
 <footer>
   <p>MIT license · Built with Rust and egui · <a href="https://github.com/khandroider/tapcode">github.com/khandroider/tapcode</a></p>
 </footer>
+
+<dialog id="lightbox" aria-label="Screenshot">
+  <button type="button" aria-label="Close">&times;</button>
+  <img alt="">
+</dialog>
+<script>
+  const lb = document.getElementById('lightbox');
+  const lbImg = lb.querySelector('img');
+  document.querySelectorAll('a.zoom').forEach(a => a.addEventListener('click', e => {
+    e.preventDefault();
+    lbImg.src = a.href;
+    lbImg.alt = a.querySelector('img').alt;
+    lb.showModal();
+  }));
+  // click on the backdrop (the dialog itself) or the button closes; Esc is built in
+  lb.addEventListener('click', e => { if (e.target !== lbImg) lb.close(); });
+</script>
 
 </body>
 </html>
