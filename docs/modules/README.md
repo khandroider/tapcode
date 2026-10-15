@@ -10,3 +10,4 @@
 - [terminal](terminal.md) — PTY terminal.
 - [workspace](workspace.md) — project file tree.
 - [assets](assets.md) — fonts, icon, themes, screenshots.
+- [site](site.md) — landing page and Pages deploy.
