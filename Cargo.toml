@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 description = "Opensource IDE for PHP / JavaScript / TypeScript"
-repository = "https://github.com/kaiyrkhan/tapcode"
+repository = "https://github.com/khandroider/tapcode"
 
 [dependencies]
 eframe = "0.36"

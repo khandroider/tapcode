@@ -1,0 +1,80 @@
+<!doctype html>
+<!-- GitHub URL: https://github.com/khandroider/tapcode — change every occurrence if the repo moves -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>tapcode — a fast IDE for PHP, JavaScript and TypeScript</title>
+  <meta name="description" content="tapcode is an open source IDE for PHP, JavaScript and TypeScript. Written in Rust. No web view. Editor, search, Git, databases, Docker and terminal in one window.">
+  <link rel="icon" href="favicon.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="#"><img src="favicon.png" alt="" width="28" height="28"> tapcode</a>
+  <nav>
+    <a href="#features">Features</a>
+    <a href="#screens">Screens</a>
+    <a href="#build">Build</a>
+    <a class="btn btn-small" href="https://github.com/khandroider/tapcode">GitHub</a>
+  </nav>
+</header>
+
+<main>
+  <section class="hero">
+    <p class="tag">Open source · Rust · macOS</p>
+    <h1>An IDE for PHP, JS and TS.<br>Fast, because it is Rust.</h1>
+    <p class="lead">Editor, search, Git, databases, Docker and a terminal in one window. No web view. No lag.</p>
+    <p class="cta">
+      <a class="btn" href="https://github.com/khandroider/tapcode">View on GitHub</a>
+      <a class="btn btn-ghost" href="#build">Build from source</a>
+    </p>
+    <figure class="shot shot-big">
+      <img src="img/screenshot.png" alt="tapcode editor window with a PHP file, file tree and bottom panel" width="1400" height="900" loading="eager">
+    </figure>
+  </section>
+
+  <section id="features" class="features">
+    <h2>What it does</h2>
+    <ul class="grid">
+      <li><h3>Editor</h3><p>Tree-sitter highlighting for PHP, JS, TS, JSON, HTML, CSS, Markdown, YAML and SQL. Undo, find and replace, auto-indent, auto-save.</p></li>
+      <li><h3>Search Everywhere</h3><p>Shift Shift. Go to file, class or symbol. Find and replace in path. All from the keyboard.</p></li>
+      <li><h3>Instant index</h3><p>SQLite with full-text search. Updates as files change. Big projects stay fast.</p></li>
+      <li><h3>Code intelligence</h3><p>LSP built in. Completion, hover, go to definition, find usages and errors for PHP and TypeScript.</p></li>
+      <li><h3>Git</h3><p>Commit, push, pull, branches, merge, rebase, stash, log and blame. Diff right in the editor.</p></li>
+      <li><h3>Databases</h3><p>Postgres and Redis. Tree of schemas and tables, SQL console, grid. Read-only by default, so you cannot break prod by mistake.</p></li>
+      <li><h3>Docker</h3><p>Containers, images and compose. Start, stop, logs, exec into a terminal tab.</p></li>
+      <li><h3>Terminal</h3><p>Real PTY with tabs and true color. Alt+F12 and you are there.</p></li>
+    </ul>
+  </section>
+
+  <section id="screens" class="screens">
+    <h2>Screens</h2>
+    <ul class="shots">
+      <li><figure class="shot"><img src="img/search.png" alt="Search Everywhere popup" width="1400" height="900" loading="lazy"><figcaption>Search Everywhere</figcaption></figure></li>
+      <li><figure class="shot"><img src="img/completion.png" alt="Code completion from the language server" width="1400" height="900" loading="lazy"><figcaption>Completion</figcaption></figure></li>
+      <li><figure class="shot"><img src="img/git.png" alt="Git commit window with changes and diff" width="1400" height="900" loading="lazy"><figcaption>Git</figcaption></figure></li>
+      <li><figure class="shot"><img src="img/database-readonly.jpg" alt="Database panel asking to confirm a write query" width="1400" height="900" loading="lazy"><figcaption>Database, read-only guard</figcaption></figure></li>
+      <li><figure class="shot"><img src="img/docker.png" alt="Docker services panel with containers" width="1400" height="900" loading="lazy"><figcaption>Docker</figcaption></figure></li>
+      <li><figure class="shot"><img src="img/terminal.png" alt="Built-in terminal" width="1400" height="900" loading="lazy"><figcaption>Terminal</figcaption></figure></li>
+    </ul>
+  </section>
+
+  <section id="build" class="build">
+    <h2>Build from source</h2>
+    <p>You need Rust stable and git. For code intelligence, install Node (servers start via <code>npx</code>). For the Docker panel, Docker Desktop.</p>
+<pre><code>git clone https://github.com/khandroider/tapcode
+cd tapcode
+cargo run --release -- ~/path/to/project</code></pre>
+    <p>Want an app bundle?</p>
+<pre><code>sh dev/bundle.sh &amp;&amp; open target/tapcode.app</code></pre>
+  </section>
+</main>
+
+<footer>
+  <p>MIT license · Built with Rust and egui · <a href="https://github.com/khandroider/tapcode">github.com/khandroider/tapcode</a></p>
+</footer>
+
+</body>
+</html>

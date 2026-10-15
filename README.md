@@ -1,5 +1,7 @@
 # tapcode
 
+Сайт: https://khandroider.github.io/tapcode/
+
 Opensource IDE на Rust для PHP / JavaScript / TypeScript в духе JetBrains: редактор с tree-sitter-подсветкой, Git, базы данных с read-only режимом, Docker, встроенный терминал и LSP. GUI на `egui`, без webview.
 
 ![editor](docs/screenshot.png)
